@@ -53,7 +53,9 @@
 
 ## Thay đổi so với SPEC (nếu có)
 
-- Không đổi (`bot.py` và `weather.py` giữ nguyên 100%).
+- Sửa lỗi thật trong `weather.py` (giữ nguyên chữ ký hàm và format trả lời theo `AGENTS.md` §2):
+  1. Trong Python stdlib, `urllib.error.HTTPError` là lớp con của `urllib.error.URLError`. Khi máy chủ Open-Meteo thỉnh thoảng trả về `HTTP 503: {"error": true, "reason": "The service is overloaded"}`, khối `except (urllib.error.URLError, ...)` trong `weather.py` bắt nhầm `HTTPError` và báo sai thành `"⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."` dù máy vẫn có Wi-Fi bình thường.
+  2. Đã sửa [`_get_json`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/weather.py#L157-L185) để tự động retry tối đa 5 lần khi gặp HTTP `429/500/502/503/504`, thêm bộ nhớ đệm 3 phút (`_JSON_CACHE`, `_GEO_CACHE`) giảm một nửa số request tới Open-Meteo, và tách `except urllib.error.HTTPError:` lên trước `except (urllib.error.URLError, ...):`.
 
 ## Lỗi còn tồn tại / lưu ý
 

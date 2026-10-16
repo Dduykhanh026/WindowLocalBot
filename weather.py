@@ -149,15 +149,49 @@ def _place_label(loc: dict) -> str:
     return f"{name}, {admin1}"
 
 
-def _get_json(url: str, timeout: int = 10) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "windows-local-bot/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+_GEO_CACHE: dict[str, dict] = {}
+_JSON_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = 180.0  # Cache 3 phút để giảm tải và tránh lỗi 503 từ Open-Meteo
+
+
+def _get_json(url: str, timeout: int = 10, retries: int = 5) -> dict:
+    import time
+    now = time.time()
+    cached = _JSON_CACHE.get(url)
+    if cached and (now - cached[0]) < _CACHE_TTL:
+        return cached[1]
+
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "windows-local-bot/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                _JSON_CACHE[url] = (time.time(), data)
+                return data
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(0.3)
+                continue
+            raise
+    if cached:
+        return cached[1]
+    raise last_err  # type: ignore[misc]
 
 
 def geocode(city: str) -> dict | None:
     """Tìm tọa độ + tên chuẩn của 1 thành phố. Trả None nếu không tìm thấy."""
     q = CITY_ALIASES.get(_norm_city(city), city.strip())
+    cache_key = q.lower()
+    if cache_key in _GEO_CACHE:
+        return _GEO_CACHE[cache_key]
     params = urllib.parse.urlencode(
         {"name": q, "count": 1, "language": "vi", "format": "json"}
     )
@@ -166,7 +200,7 @@ def geocode(city: str) -> dict | None:
     if not results:
         return None
     r = results[0]
-    return {
+    loc = {
         "name": r.get("name"),
         "admin1": r.get("admin1"),
         "country": r.get("country"),
@@ -174,12 +208,16 @@ def geocode(city: str) -> dict | None:
         "longitude": r["longitude"],
         "timezone": r.get("timezone", "auto"),
     }
+    _GEO_CACHE[cache_key] = loc
+    return loc
 
 
 def get_current_weather(city: str) -> str:
     """Chuỗi thời tiết hiện tại, đã format tiếng Việt."""
     try:
         loc = geocode(city)
+    except urllib.error.HTTPError:
+        return "⚠️ Lỗi khi tra cứu địa điểm, thử tên thành phố khác nhé."
     except (urllib.error.URLError, TimeoutError, OSError):
         return "⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."
     except Exception:
@@ -207,6 +245,8 @@ def get_current_weather(city: str) -> str:
             f"• Độ ẩm: {cur['relative_humidity_2m']}%\n"
             f"• Gió: {cur['wind_speed_10m']} km/h"
         )
+    except urllib.error.HTTPError:
+        return "⚠️ Lỗi khi lấy thời tiết, thử lại sau 1 chút nhé."
     except (urllib.error.URLError, TimeoutError, OSError):
         return "⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."
     except Exception:
@@ -217,6 +257,8 @@ def get_tomorrow_weather(city: str) -> str:
     """Dự báo ngày mai (min/max + tóm tắt)."""
     try:
         loc = geocode(city)
+    except urllib.error.HTTPError:
+        return "⚠️ Lỗi khi tra cứu địa điểm, thử tên thành phố khác nhé."
     except (urllib.error.URLError, TimeoutError, OSError):
         return "⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."
     except Exception:
@@ -248,6 +290,8 @@ def get_tomorrow_weather(city: str) -> str:
             f"• {desc}\n"
             f"• Nhiệt độ: {tmin}°C – {tmax}°C{rain_txt}"
         )
+    except urllib.error.HTTPError:
+        return "⚠️ Lỗi khi lấy dự báo, thử lại sau 1 chút nhé."
     except (urllib.error.URLError, TimeoutError, OSError):
         return "⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."
     except Exception:
