@@ -761,11 +761,6 @@ function formatSafeMessageHtml(text) {
   return escaped.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
 }
 
-const initialBotMsg = document.querySelector("#chat .bot-message");
-if (initialBotMsg) {
-  initialBotMsg.innerHTML = formatSafeMessageHtml(initialBotMsg.textContent || "");
-}
-
 function scrollToBottom() {
   if (!chatEl) return;
   chatEl.scrollTop = chatEl.scrollHeight;
