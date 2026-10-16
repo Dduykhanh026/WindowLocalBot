@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bot Local</title>
+  <title>Wisp</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -19,15 +19,17 @@
 
   <div class="chat-container">
     <section class="orb-stage">
-      <div class="orb-canvas-wrap" id="orbModeBtn" title="Bấm để đổi trạng thái hoặc chọn bên dưới">
-        <canvas id="centerOrb" width="220" height="220" aria-label="Thinking Orb"></canvas>
+      <div class="orb-canvas-wrap" id="orbModeBtn" title="Bấm để đổi trạng thái của Wisp">
+        <canvas id="centerOrb" width="220" height="220" aria-label="Wisp Thinking Orb"></canvas>
       </div>
+
+      <div class="wisp-title">Wisp</div>
 
       <div id="typingIndicator" class="orb-status" aria-live="polite">
-        <span id="typingText" class="orb-status-text visible">breathing</span>
+        <span id="typingText" class="orb-status-text visible">breathing • Sẵn sàng</span>
       </div>
 
-      <div class="orb-state-switcher" id="orbStateSwitcher" role="tablist" aria-label="Trạng thái Thinking Orb">
+      <div class="orb-state-switcher" id="orbStateSwitcher" role="tablist" aria-label="Trạng thái Wisp">
         <button type="button" class="state-pill active" data-state="auto">Auto AI</button>
         <button type="button" class="state-pill" data-state="breathing">breathing</button>
         <button type="button" class="state-pill" data-state="listening">listening</button>
@@ -49,7 +51,7 @@
           type="text"
           id="msg"
           class="chat-input"
-          placeholder="Hỏi bất kỳ điều gì..."
+          placeholder="Nhắn cho Wisp..."
           autocomplete="off"
           autofocus
         >

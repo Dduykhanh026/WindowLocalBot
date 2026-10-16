@@ -143,6 +143,14 @@ html[data-theme="light"] .icon-sun {
   transform: scale(0.97);
 }
 
+.wisp-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin-top: 2px;
+}
+
 .orb-status {
   min-height: 22px;
   margin-top: 2px;

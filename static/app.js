@@ -696,15 +696,15 @@ const ALL_STATES = [
 ];
 
 const STATE_DESCRIPTIONS = {
-  breathing: "breathing • Sẵn sàng",
-  listening: "listening • Đang lắng nghe bạn gõ…",
-  working: "working • Đang xử lý…",
-  searching: "searching • Đang tra cứu thời tiết…",
-  solving: "solving • Đang phân tích…",
-  connecting: "connecting • Đang kết nối…",
-  weaving: "weaving • Đang tổng hợp…",
-  composing: "composing • Đang soạn câu trả lời…",
-  shaping: "shaping • Đang định hình…",
+  breathing: "breathing • Wisp sẵn sàng",
+  listening: "listening • Wisp đang lắng nghe…",
+  working: "working • Wisp đang xử lý…",
+  searching: "searching • Wisp đang tra cứu thời tiết…",
+  solving: "solving • Wisp đang phân tích…",
+  connecting: "connecting • Wisp đang kết nối…",
+  weaving: "weaving • Wisp đang tổng hợp…",
+  composing: "composing • Wisp đang phản hồi…",
+  shaping: "shaping • Wisp đang định hình…",
 };
 
 const chatEl = document.getElementById("chat");
@@ -743,7 +743,7 @@ function syncIdleOrPinnedState() {
   if (pinnedMode !== "auto") {
     setOrbVisualState(pinnedMode, `${pinnedMode} (${STATE_TO_MODE[pinnedMode]})`);
   } else {
-    setOrbVisualState("breathing", "breathing • Sẵn sàng");
+    setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing);
   }
 }
 
@@ -769,15 +769,15 @@ function scrollToBottom() {
 function pickThinkingStateForQuery(query) {
   const q = query.toLowerCase();
   if (q.includes("thời tiết") || q.includes("thoi tiet") || q.includes("weather") || q.includes("nhiệt độ")) {
-    return { state: "searching", label: "searching • Bot đang tra cứu thời tiết…" };
+    return { state: "searching", label: "searching • Wisp đang tra cứu thời tiết…" };
   }
   if (q.includes("giờ") || q.includes("gio") || q.includes("hôm nay") || q.includes("hom nay") || q.includes("ngày")) {
-    return { state: "working", label: "working • Bot đang xem giờ…" };
+    return { state: "working", label: "working • Wisp đang xem giờ…" };
   }
   if (q.includes("help") || q.includes("trợ giúp")) {
-    return { state: "connecting", label: "connecting • Bot đang trả lời…" };
+    return { state: "connecting", label: "connecting • Wisp đang trả lời…" };
   }
-  return { state: "solving", label: "solving • Bot đang suy nghĩ…" };
+  return { state: "solving", label: "solving • Wisp đang suy nghĩ…" };
 }
 
 function appendMessage(text, sender) {
@@ -860,7 +860,7 @@ async function sendMessage(presetText) {
   }
 
   // Bước 2: Chuyển sang trạng thái Composing khi hiển thị câu trả lời
-  setOrbVisualState("composing", "composing • Đang phản hồi…");
+  setOrbVisualState("composing", STATE_DESCRIPTIONS.composing);
   appendMessage(replyText, "bot");
 
   isSending = false;
@@ -884,7 +884,7 @@ if (msgInput) {
     if (isSending || pinnedMode !== "auto") return;
     clearTimeout(typingIdleTimer);
     if (msgInput.value.trim().length > 0) {
-      setOrbVisualState("listening", "listening • Đang lắng nghe…");
+      setOrbVisualState("listening", STATE_DESCRIPTIONS.listening);
       typingIdleTimer = setTimeout(() => {
         if (!isSending && pinnedMode === "auto") {
           syncIdleOrPinnedState();

@@ -52,7 +52,7 @@ HELP_TEXT = (
 )
 
 GREETING = (
-    "👋 Chào Nguyen! Mình là bot local chạy trên máy Windows này.\n"
+    "👋 Chào Nguyen! Mình là Wisp — bot local chạy trên máy Windows này.\n"
     "Hỏi mình `thời tiết`, `mấy giờ`, `hôm nay`…\n"
     "Gõ `help` để xem tất cả lệnh nhé."
 )
@@ -101,8 +101,8 @@ def get_reply(message: str) -> str:
     # --- Help / chào ---
     if n in ("help", "tro giup", "giup", "lenh", "menu", "?"):
         return HELP_TEXT
-    if n in ("hi", "hello", "hey", "chao", "xin chao", "alo"):
-        return "👋 Chào Nguyen! Hỏi mình `thời tiết` hay `mấy giờ` đi."
+    if n in ("hi", "hello", "hey", "chao", "xin chao", "alo", "wisp"):
+        return "👋 Chào Nguyen! Mình là Wisp. Hỏi mình `thời tiết` hay `mấy giờ` đi."
 
     # --- Thời tiết (ưu tiên trước, vì câu có thể chứa cả 'ngày mai'...) ---
     if "thoi tiet" in n or "thoi tiet" in n or "weather" in n or "nhiet do" in n:
