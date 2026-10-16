@@ -622,7 +622,9 @@ function isDarkMode() {
 
 /**
  * Mount ThinkingOrb render ở hệ tọa độ chuẩn VIRTUAL_SIZE = 64 của thư viện gốc
- * nhưng phóng nét vector lên displaySize (128px) và có crossfade mượt khi đổi trạng thái.
+ * nhưng phóng nét vector lên displaySize (460px), có crossfade mượt khi đổi trạng thái
+ * và tích phân pha liên tục (phase accumulator) để điều biến tốc độ/năng lượng (energy)
+ * theo tốc độ gõ phím hoặc tốc độ sinh token GPU mà không bị giật khung hình.
  */
 function mountThinkingOrb(canvas, initialState = "breathing", displaySize = 128) {
   if (!canvas) return null;
@@ -641,8 +643,23 @@ function mountThinkingOrb(canvas, initialState = "breathing", displaySize = 128)
   let transitionStart = 0;
   const TRANSITION_MS = 280;
 
+  let lastFrameMs = performance.now();
+  let activeTime = 0;
+  let prevTime = 0;
+  let currentEnergy = 1;
+  let targetEnergy = 1;
+
   function render(now) {
-    const tSec = now / 1000;
+    const dt = Math.min(0.05, Math.max(0, (now - lastFrameMs) / 1000));
+    lastFrameMs = now;
+
+    // Nội suy mượt mức năng lượng (energy multiplier)
+    currentEnergy += (targetEnergy - currentEnergy) * Math.min(1, dt * 8);
+    activeTime += dt * active.speed * currentEnergy;
+    if (prev) {
+      prevTime += dt * prev.speed * currentEnergy;
+    }
+
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.clearRect(0, 0, VIRTUAL_SIZE, VIRTUAL_SIZE);
     const dark = isDarkMode();
@@ -650,11 +667,11 @@ function mountThinkingOrb(canvas, initialState = "breathing", displaySize = 128)
     if (prev) {
       const p = Math.min(1, (now - transitionStart) / TRANSITION_MS);
       const ease = p * p * (3 - 2 * p);
-      paintFrame(ctx, prev.frameFn(VIRTUAL_SIZE, tSec * prev.speed, prev.opts), dark, undefined, 1 - ease);
-      paintFrame(ctx, active.frameFn(VIRTUAL_SIZE, tSec * active.speed, active.opts), dark, undefined, ease);
+      paintFrame(ctx, prev.frameFn(VIRTUAL_SIZE, prevTime, prev.opts), dark, undefined, 1 - ease);
+      paintFrame(ctx, active.frameFn(VIRTUAL_SIZE, activeTime, active.opts), dark, undefined, ease);
       if (p >= 1) prev = null;
     } else {
-      paintFrame(ctx, active.frameFn(VIRTUAL_SIZE, tSec * active.speed, active.opts), dark);
+      paintFrame(ctx, active.frameFn(VIRTUAL_SIZE, activeTime, active.opts), dark);
     }
 
     requestAnimationFrame(render);
@@ -666,8 +683,12 @@ function mountThinkingOrb(canvas, initialState = "breathing", displaySize = 128)
     setState(nextState) {
       if (nextState === active.state) return;
       prev = active;
+      prevTime = activeTime;
       active = resolvePreset64(nextState);
       transitionStart = performance.now();
+    },
+    setEnergy(mult) {
+      targetEnergy = Math.max(0.65, Math.min(1.75, Number(mult) || 1));
     },
     getState() {
       return active.state;
@@ -679,7 +700,10 @@ function mountThinkingOrb(canvas, initialState = "breathing", displaySize = 128)
 }
 
 /* ==========================================================================
-   PHẦN 2: VÒNG ĐỜI TRẠNG THÁI AI TỰ NHIÊN & HIỆU ỨNG STREAMING ĐỒNG BỘ
+   PHẦN 2: ĐIỀU KHIỂN TRẠNG THÁI THÔNG MINH THEO TELEMETRY THỜI GIAN THỰC
+   - Không hardcode từ khóa ở frontend
+   - Phản ứng theo động lực gõ phím (tốc độ gõ, xóa sửa, ngập ngừng suy nghĩ)
+   - Đồng bộ trực tiếp với từng pha xử lý thực tế từ Backend & dòng chảy Token GPU
    ========================================================================== */
 
 const FALLBACK_ERROR = "⚠️ Có lỗi gì đó, thử lại nhé.";
@@ -698,13 +722,13 @@ const ALL_STATES = [
 const STATE_DESCRIPTIONS = {
   breathing: "Sẵn sàng",
   listening: "Đang lắng nghe…",
-  working: "Đang tra cứu giờ…",
-  searching: "Đang quét dữ liệu thời tiết…",
-  solving: "Đang suy luận & xử lý logic…",
-  connecting: "Đang kết nối tri thức…",
-  weaving: "Đang biên soạn nội dung…",
+  working: "Đang xử lý tác vụ…",
+  searching: "Đang truy xuất dữ liệu thời gian thực…",
+  solving: "Đang suy luận trên GPU…",
+  connecting: "Đang kết nối ngữ cảnh…",
+  weaving: "Đang tổng hợp dữ liệu…",
   composing: "Đang phản hồi…",
-  shaping: "Đang khởi tạo…",
+  shaping: "Đang định hình ý tưởng…",
 };
 
 const chatEl = document.getElementById("chat");
@@ -717,13 +741,20 @@ const themeToggleBtn = document.getElementById("themeToggleBtn");
 
 let isSending = false;
 let typingIdleTimer = 0;
+let typingShapeTimer = 0;
 let previewResetTimer = 0;
+
+// Telemetry theo dõi nhịp gõ phím của người dùng
+const keystrokeTimes = [];
+let prevInputLength = 0;
+let consecutiveDeletes = 0;
 
 const centerOrb = mountThinkingOrb(centerOrbCanvas, "breathing", 460);
 
-function setOrbVisualState(state, customCaption) {
+function setOrbVisualState(state, customCaption, energy = 1) {
   if (!centerOrb) return;
   centerOrb.setState(state);
+  centerOrb.setEnergy(energy);
   if (typingText) {
     typingText.textContent = customCaption || STATE_DESCRIPTIONS[state] || "";
     typingText.classList.add("visible");
@@ -731,7 +762,8 @@ function setOrbVisualState(state, customCaption) {
 }
 
 function syncIdleState() {
-  setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing);
+  consecutiveDeletes = 0;
+  setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing, 1);
 }
 
 /**
@@ -753,71 +785,6 @@ function scrollToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
-/**
- * Phân tích câu hỏi để chọn đúng trạng thái ngữ nghĩa trong 9 trạng thái của thinking-orbs:
- * - Thời tiết / địa lý -> searching (globe: địa cầu quét kinh tuyến)
- * - Giờ giấc / ngày tháng -> working (orbits: quỹ đạo đồng hồ)
- * - Code / tính toán / kỹ thuật -> solving (rubik: khối cầu giải thuật)
- * - Viết lách / kể chuyện / dịch / tóm tắt -> weaving (braid: đan dệt ý tưởng)
- * - Xóa lịch sử / cấu hình -> shaping (morph: biến hình)
- * - Hỏi đáp / trò chuyện tự nhiên -> connecting (web: mạng lưới nơ-ron)
- */
-function pickThinkingStateForQuery(query) {
-  const q = query.toLowerCase();
-  if (
-    q.includes("thời tiết") ||
-    q.includes("thoi tiet") ||
-    q.includes("weather") ||
-    q.includes("nhiệt độ") ||
-    q.includes("mưa") ||
-    q.includes("nắng")
-  ) {
-    return { state: "searching", label: STATE_DESCRIPTIONS.searching };
-  }
-  if (
-    q.includes("mấy giờ") ||
-    q.includes("may gio") ||
-    q.includes("giờ ở") ||
-    q.includes("gio o") ||
-    q.includes("hôm nay") ||
-    q.includes("hom nay") ||
-    q.includes("ngày mấy") ||
-    q === "giờ" ||
-    q === "gio"
-  ) {
-    return { state: "working", label: STATE_DESCRIPTIONS.working };
-  }
-  if (
-    q.includes("code") ||
-    q.includes("viết hàm") ||
-    q.includes("swift") ||
-    q.includes("flutter") ||
-    q.includes("dart") ||
-    q.includes("python") ||
-    q.includes("js") ||
-    q.includes("lỗi") ||
-    q.includes("bug") ||
-    q.includes("tính") ||
-    q.includes("thuật toán")
-  ) {
-    return { state: "solving", label: STATE_DESCRIPTIONS.solving };
-  }
-  if (
-    q.includes("kể") ||
-    q.includes("viết") ||
-    q.includes("thơ") ||
-    q.includes("dịch") ||
-    q.includes("tóm tắt") ||
-    q.includes("giải thích")
-  ) {
-    return { state: "weaving", label: STATE_DESCRIPTIONS.weaving };
-  }
-  if (q.includes("xóa lịch sử") || q === "clear" || q === "reset") {
-    return { state: "shaping", label: STATE_DESCRIPTIONS.shaping };
-  }
-  return { state: "connecting", label: STATE_DESCRIPTIONS.connecting };
-}
-
 function appendUserMessage(text) {
   if (!chatEl) return;
   const row = document.createElement("div");
@@ -830,36 +797,80 @@ function appendUserMessage(text) {
   scrollToBottom();
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Hiệu ứng gõ chữ mượt (streaming typewriter) đồng bộ với trạng thái "composing" của Orb.
- */
-async function streamBotMessage(fullText) {
-  if (!chatEl) return;
+function createBotBubble() {
+  if (!chatEl) return null;
   const row = document.createElement("div");
   row.className = "message-row bot-row";
   const bubble = document.createElement("div");
   bubble.className = "message bot-message";
   row.appendChild(bubble);
   chatEl.appendChild(row);
+  return { row, bubble };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Phân tích cấu trúc văn bản đang được AI sinh ra theo thời gian thực (live token stream):
+ * - Nếu dòng chảy token đang mở khối code ```...``` -> chuyển sang `working` (orbits: viết mã nguồn)
+ * - Nếu đang liệt kê danh sách nhiều mục / phân tích cấu trúc -> chuyển sang `weaving` (braid: đan dệt ý tưởng)
+ * - Nếu đang viết câu trả lời tự nhiên -> giữ `composing` (ribbon: phản hồi mượt)
+ * Đồng thời điều chỉnh năng lượng (energy) của quả cầu dựa trên tốc độ sinh token thực tế của GPU (tok/s).
+ */
+function adaptOrbToLiveTokenStream(accumulatedText, tokensPerSec) {
+  const energy = Math.max(0.95, Math.min(1.5, 0.9 + tokensPerSec / 45));
+  const fenceCount = (accumulatedText.match(/```/g) || []).length;
+
+  // Đang ở bên trong một khối code block chưa đóng
+  if (fenceCount % 2 === 1) {
+    setOrbVisualState("working", "Đang viết mã nguồn…", energy * 1.08);
+    return;
+  }
+
+  // Kiểm tra dòng hiện tại hoặc các dòng gần nhất có phải danh sách / bước cấu trúc không
+  const recentWindow = accumulatedText.slice(-180);
+  const bulletMatches = recentWindow.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+/g);
+  if (bulletMatches && bulletMatches.length >= 2) {
+    setOrbVisualState("weaving", "Đang hệ thống hóa nội dung…", energy);
+    return;
+  }
+
+  setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, energy);
+}
+
+/**
+ * Hiệu ứng gõ chữ mượt (dùng khi câu trả lời đến từ Fast-path hoặc fallback JSON).
+ */
+async function streamBotMessage(fullText, existingBubble = null) {
+  const target = existingBubble || createBotBubble();
+  if (!target) return;
+  const { bubble } = target;
 
   const tokens = fullText.split(/(\s+)/);
   let current = "";
-  const step = Math.max(1, Math.ceil(tokens.length / 28));
+  const step = Math.max(1, Math.ceil(tokens.length / 26));
 
   for (let i = 0; i < tokens.length; i += step) {
     current += tokens.slice(i, i + step).join("");
     bubble.innerHTML = formatSafeMessageHtml(current);
     scrollToBottom();
-    await delay(18);
+    await delay(16);
   }
   bubble.innerHTML = formatSafeMessageHtml(fullText);
   scrollToBottom();
 }
 
+/**
+ * Gửi tin nhắn và đọc luồng sự kiện NDJSON thời gian thực từ `/api/chat/stream`.
+ * Quả cầu tự động chuyển trạng thái theo đúng bước thực thi thật của Backend & GPU:
+ * - Backend nạp lịch sử -> `connecting`
+ * - Backend gọi Open-Meteo API -> `searching`
+ * - Backend ghép dữ liệu công cụ vào ngữ cảnh LLM -> `weaving`
+ * - Ollama nạp prompt lên GPU và suy luận -> `solving`
+ * - Từng token trả về -> `composing` / `working` (khi gõ code) / `weaving` (khi lập danh sách)
+ */
 async function sendMessage(presetText) {
   if (isSending) return;
 
@@ -871,6 +882,7 @@ async function sendMessage(presetText) {
   }
 
   clearTimeout(typingIdleTimer);
+  clearTimeout(typingShapeTimer);
   clearTimeout(previewResetTimer);
 
   appendUserMessage(message);
@@ -879,20 +891,31 @@ async function sendMessage(presetText) {
   } else if (msgInput && msgInput.value.trim() === message) {
     msgInput.value = "";
   }
+  prevInputLength = 0;
+  consecutiveDeletes = 0;
 
   isSending = true;
   if (sendBtn) sendBtn.disabled = true;
   if (msgInput) msgInput.disabled = true;
 
-  // Bước 1: Chuyển sang trạng thái Thinking phù hợp với câu hỏi
-  const { state: thinkingState, label: thinkingLabel } = pickThinkingStateForQuery(message);
-  setOrbVisualState(thinkingState, thinkingLabel);
+  let lastStateSwitchMs = performance.now();
+  async function transitionOrbWithMinVisibility(nextState, label, minHoldMs = 260) {
+    const now = performance.now();
+    const elapsed = now - lastStateSwitchMs;
+    if (elapsed < minHoldMs && centerOrb && centerOrb.getState() !== nextState) {
+      await delay(minHoldMs - elapsed);
+    }
+    setOrbVisualState(nextState, label, 1.05);
+    lastStateSwitchMs = performance.now();
+  }
 
-  const startMs = performance.now();
-  let replyText = FALLBACK_ERROR;
+  let botBubbleObj = null;
+  let accumulatedText = "";
+  let streamedTokenCount = 0;
+  let firstTokenMs = 0;
 
   try {
-    const response = await fetch("/api/chat", {
+    const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -900,28 +923,98 @@ async function sendMessage(presetText) {
       body: JSON.stringify({ message }),
     });
 
-    if (response.ok) {
-      const data = await response.json();
-      if (data && typeof data.reply === "string" && data.reply.trim() !== "") {
-        replyText = data.reply;
+    if (!response.ok || !response.body) {
+      throw new Error("Stream unavailable");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let pendingStateText = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let newlineIdx;
+      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+        if (!line) continue;
+
+        let evt;
+        try {
+          evt = JSON.parse(line);
+        } catch (_e) {
+          continue;
+        }
+
+        if (evt.type === "state" && evt.state) {
+          // Nếu belum có token nào được in ra, giữ nhịp chuyển trạng thái mượt để mắt người nhìn rõ pha xử lý
+          const holdMs = streamedTokenCount === 0 ? 320 : 0;
+          await transitionOrbWithMinVisibility(evt.state, evt.label, holdMs);
+        } else if (evt.type === "token" && typeof evt.delta === "string") {
+          if (!firstTokenMs) {
+            firstTokenMs = performance.now();
+            // Nếu pha suy nghĩ trước đó vừa mới bật quá nhanh (fast-path), chờ nhẹ để người dùng thấy rõ pha xử lý
+            const sinceLastState = firstTokenMs - lastStateSwitchMs;
+            if (sinceLastState < 420 && streamedTokenCount === 0) {
+              await delay(420 - sinceLastState);
+            }
+          }
+
+          streamedTokenCount += 1;
+          accumulatedText += evt.delta;
+
+          // Nếu chỉ có 1 cục văn bản lớn trả về ngay (Fast-path), chạy hiệu ứng gõ chữ mượt
+          if (streamedTokenCount === 1 && evt.delta.length > 28) {
+            pendingStateText = evt.delta;
+          } else {
+            if (pendingStateText !== null) {
+              botBubbleObj = botBubbleObj || createBotBubble();
+              pendingStateText = null;
+            }
+            botBubbleObj = botBubbleObj || createBotBubble();
+            if (botBubbleObj) {
+              botBubbleObj.bubble.innerHTML = formatSafeMessageHtml(accumulatedText);
+              scrollToBottom();
+            }
+            const elapsedSec = Math.max(0.1, (performance.now() - firstTokenMs) / 1000);
+            const tokPerSec = streamedTokenCount / elapsedSec;
+            adaptOrbToLiveTokenStream(accumulatedText, tokPerSec);
+          }
+        }
       }
     }
+
+    // Nếu là câu trả lời Fast-path (1 chunk duy nhất), hiển thị bằng hiệu ứng typewriter mượt
+    if (pendingStateText !== null) {
+      setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, 1.1);
+      await streamBotMessage(pendingStateText);
+    } else if (!accumulatedText.trim()) {
+      await streamBotMessage(FALLBACK_ERROR);
+    }
   } catch (_err) {
-    replyText = FALLBACK_ERROR;
+    // Fallback an toàn về /api/chat nếu trình duyệt không hỗ trợ ReadableStream
+    try {
+      setOrbVisualState("connecting", STATE_DESCRIPTIONS.connecting, 1);
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+      const data = res.ok ? await res.json() : null;
+      const reply = data && typeof data.reply === "string" && data.reply.trim() ? data.reply : FALLBACK_ERROR;
+      setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, 1.05);
+      await streamBotMessage(reply);
+    } catch (_fallbackErr) {
+      await streamBotMessage(FALLBACK_ERROR);
+    }
   }
 
-  // Đảm bảo hiệu ứng Thinking hiển thị tối thiểu 600ms để mắt người cảm nhận rõ
-  const elapsed = performance.now() - startMs;
-  if (elapsed < 600) {
-    await delay(600 - elapsed);
-  }
-
-  // Bước 2: Chuyển sang trạng thái Composing (ribbon) đồng bộ lúc Wisp đang gõ câu trả lời
-  setOrbVisualState("composing", STATE_DESCRIPTIONS.composing);
-  await streamBotMessage(replyText);
-
-  // Bước 3: Trả lời xong -> dịu mượt về trạng thái Idle (breathing)
-  await delay(250);
+  // Hoàn tất phản hồi -> dịu mượt về trạng thái Idle (breathing)
+  await delay(220);
   isSending = false;
   if (sendBtn) sendBtn.disabled = false;
   if (msgInput) {
@@ -931,22 +1024,67 @@ async function sendMessage(presetText) {
   syncIdleState();
 }
 
-// Khi user gõ phím -> chuyển Orb sang "listening" (wave)
+/**
+ * Phản ứng thông minh theo động lực gõ phím thời gian thực của người dùng:
+ * - Gõ liên tục: `listening` (wave) với tốc độ sóng tỉ lệ thuận với tốc độ gõ (keys/sec).
+ * - Xóa sửa nhiều ký tự liên tiếp (Backspace/Delete): chuyển sang `shaping` (morph: đang cấu trúc lại ý).
+ * - Đang gõ dở câu mà dừng lại ngẫm nghĩ (> 900ms): chuyển nhẹ sang `shaping` (morph: chờ bạn định hình ý),
+ *   sau đó nếu nghỉ hẳn (> 2800ms) mới dịu về `breathing`.
+ */
 if (msgInput) {
   msgInput.addEventListener("input", () => {
     if (isSending) return;
     clearTimeout(typingIdleTimer);
+    clearTimeout(typingShapeTimer);
     clearTimeout(previewResetTimer);
-    if (msgInput.value.trim().length > 0) {
-      setOrbVisualState("listening", STATE_DESCRIPTIONS.listening);
-      typingIdleTimer = setTimeout(() => {
-        if (!isSending) {
-          syncIdleState();
-        }
-      }, 1800);
-    } else {
+
+    const now = performance.now();
+    const val = msgInput.value;
+    const trimmedLen = val.trim().length;
+
+    if (trimmedLen === 0) {
+      prevInputLength = 0;
+      consecutiveDeletes = 0;
       syncIdleState();
+      return;
     }
+
+    // Tính tốc độ gõ phím trong cửa sổ 1.2 giây gần nhất
+    keystrokeTimes.push(now);
+    while (keystrokeTimes.length > 0 && now - keystrokeTimes[0] > 1200) {
+      keystrokeTimes.shift();
+    }
+    const keysPerSec = keystrokeTimes.length / 1.2;
+    const waveEnergy = Math.max(0.88, Math.min(1.55, 0.85 + keysPerSec * 0.085));
+
+    // Phát hiện hành vi xóa/viết lại câu hỏi
+    if (val.length < prevInputLength) {
+      consecutiveDeletes += prevInputLength - val.length;
+    } else {
+      consecutiveDeletes = Math.max(0, consecutiveDeletes - 1);
+    }
+    prevInputLength = val.length;
+
+    if (consecutiveDeletes >= 5) {
+      setOrbVisualState("shaping", "Đang chỉnh sửa câu hỏi…", 1.15);
+    } else {
+      setOrbVisualState("listening", STATE_DESCRIPTIONS.listening, waveEnergy);
+    }
+
+    // Nếu người dùng đang gõ dở câu dài và tạm dừng suy nghĩ -> chuyển sang `shaping`
+    if (trimmedLen >= 6) {
+      typingShapeTimer = setTimeout(() => {
+        if (!isSending && msgInput.value.trim().length >= 6) {
+          setOrbVisualState("shaping", STATE_DESCRIPTIONS.shaping, 0.92);
+        }
+      }, 950);
+    }
+
+    typingIdleTimer = setTimeout(() => {
+      if (!isSending) {
+        syncIdleState();
+      }
+    }, 2800);
   });
 
   msgInput.addEventListener("keydown", (event) => {
@@ -965,7 +1103,7 @@ if (orbModeBtn) {
     const cur = centerOrb ? centerOrb.getState() : "breathing";
     const idx = (ALL_STATES.indexOf(cur) + 1) % ALL_STATES.length;
     const next = ALL_STATES[idx];
-    setOrbVisualState(next, `${STATE_DESCRIPTIONS[next]}`);
+    setOrbVisualState(next, `${STATE_DESCRIPTIONS[next]}`, 1);
     previewResetTimer = setTimeout(() => {
       if (!isSending) syncIdleState();
     }, 4000);

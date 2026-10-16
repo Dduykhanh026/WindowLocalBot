@@ -22,8 +22,10 @@ MAX_HISTORY_TURNS = 10  # Giữ tối đa 10 lượt hội thoại gần nhất 
 
 SYSTEM_PROMPT = (
     "Bạn là Wisp, trợ lý AI cá nhân thông minh chạy local 100% trên máy Windows "
-    "của Nguyen (lập trình viên iOS/SwiftUI và Flutter). Hãy trả lời bằng tiếng Việt "
-    "tự nhiên, ngắn gọn, súc tích, thông minh. Khi viết code hoặc lệnh thì bọc trong dấu backtick."
+    "của Nguyen (lập trình viên iOS/SwiftUI và Flutter). "
+    "QUY TẮC BẮT BUỘC: Luôn trả lời 100% bằng tiếng Việt chuẩn xác, tự nhiên, ngắn gọn, súc tích. "
+    "TUYỆT ĐỐI KHÔNG dùng chữ Hán (tiếng Trung) trong câu trả lời. "
+    "Khi viết code hoặc lệnh thì bọc trong dấu backtick."
 )
 
 OLLAMA_WAITING_MSG = (
@@ -207,6 +209,7 @@ def _ask_ollama(raw_message: str, text_norm: str) -> str:
                 "model": model,
                 "messages": messages,
                 "stream": False,
+                "options": {"temperature": 0.35},
             }
         ).encode("utf-8")
 
@@ -301,4 +304,183 @@ def get_reply(message: str) -> str:
 
     # --- Mọi câu hỏi tự nhiên, tư vấn thời tiết, trò chuyện, viết code -> AI Local (Ollama) ---
     return _ask_ollama(raw, n)
+
+
+def stream_reply(message: str):
+    """
+    Generator phát luồng sự kiện thời gian thực (NDJSON) phản ánh chính xác
+    tiến trình xử lý ở backend & luồng sinh token từ GPU Ollama.
+    """
+    import time
+
+    raw = message.strip()
+    if not raw:
+        yield {"type": "state", "state": "breathing", "label": "Sẵn sàng"}
+        yield {"type": "token", "delta": "Gõ gì đó đi, vd: `thời tiết`, `mấy giờ` 😄"}
+        yield {"type": "done"}
+        return
+
+    n = _norm(raw)
+    n_clean = n.strip(" ,.?!")
+
+    # Giai đoạn 1: Mở kết nối & kiểm tra bộ nhớ ngữ cảnh
+    yield {"type": "state", "state": "connecting", "label": "Đang nạp ngữ cảnh…"}
+
+    # Xóa bộ nhớ hội thoại -> trạng thái shaping (biến đổi/tái cấu trúc)
+    if n_clean in ("xoa lich su", "clear", "reset", "xoa chat"):
+        yield {"type": "state", "state": "shaping", "label": "Đang làm mới bộ nhớ hội thoại…"}
+        time.sleep(0.35)
+        _CHAT_HISTORY.clear()
+        yield {"type": "token", "delta": "🧹 Wisp đã xóa lịch sử trò chuyện."}
+        yield {"type": "done"}
+        return
+
+    # Fast-path: Thời tiết ngắn -> kích hoạt searching vì thực sự gọi API Open-Meteo
+    if _is_short_weather_command(n):
+        is_tomorrow = "ngay mai" in n or "tomorrow" in n
+        city = _extract_city_after(n, ["thoi tiet", "weather", "nhiet do"]) or "Ho Chi Minh"
+        yield {"type": "state", "state": "searching", "label": "Đang truy xuất dữ liệu Open-Meteo…"}
+        t0 = time.time()
+        res = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
+        elapsed = time.time() - t0
+        if elapsed < 0.45:
+            time.sleep(0.45 - elapsed)
+        yield {"type": "state", "state": "composing", "label": "Đang phản hồi…"}
+        for chunk in re.findall(r"\S+\s*", res):
+            yield {"type": "token", "delta": chunk}
+            time.sleep(0.015)
+        yield {"type": "done"}
+        return
+
+    # Fast-path: Đồng hồ hệ thống / Giờ quốc tế / Ngày tháng -> trạng thái working
+    fast_reply = None
+    if n_clean in ("help", "tro giup", "giup", "lenh", "menu", "?"):
+        fast_reply = HELP_TEXT
+    elif n_clean in ("hi", "hello", "hey", "chao", "xin chao", "alo", "wisp"):
+        fast_reply = "👋 Chào Nguyen! Mình là Wisp. Hỏi mình `thời tiết` hay `mấy giờ` đi."
+    elif n_clean in (
+        "may gio", "may gio roi", "gio", "gio roi",
+        "gio may gio", "time", "bay gio may gio", "bay gio la may gio",
+    ):
+        now = datetime.now(VN_TZ)
+        fast_reply = (
+            f"🕐 Bây giờ là {now.strftime('%H:%M:%S')} — "
+            f"{WEEKDAY_VI[now.weekday()]}, {now.strftime('%d/%m/%Y')} (giờ Việt Nam)."
+        )
+    elif (
+        ("gio o" in n_clean or "gio tai" in n_clean or ("gio" in n_clean and any(k in n_clean for k in WORLD_TZ)))
+        and len(n_clean.split()) <= 7
+        and not any(adv in n_clean for adv in _ADVISORY_KEYWORDS)
+    ):
+        world = _world_clock(n_clean)
+        if world:
+            fast_reply = world
+        else:
+            now = datetime.now(VN_TZ)
+            fast_reply = f"🕐 Bây giờ là {now.strftime('%H:%M:%S')} (giờ Việt Nam). Gõ `giờ ở Tokyo` để xem giờ thành phố khác nhé."
+    elif n_clean in (
+        "hom nay", "ngay may", "ngay hom nay", "hom nay ngay may",
+        "hom nay la ngay may", "thu may", "hom nay thu may",
+        "hom nay la thu may", "ngay", "date", "today",
+    ):
+        now = datetime.now(VN_TZ)
+        fast_reply = f"📅 Hôm nay là {WEEKDAY_VI[now.weekday()]}, ngày {now.strftime('%d/%m/%Y')}."
+    elif n_clean in ("cam on", "cam on nhe", "cam on ban", "thank", "thanks", "thank you"):
+        fast_reply = "Không có chi 😊 Cần gì cứ hỏi mình nhé."
+    elif n_clean in ("tam biet", "bye", "goodbye", "bai bai", "hen gap lai"):
+        fast_reply = "👋 Bye Nguyen, hẹn gặp lại!"
+
+    if fast_reply is not None:
+        yield {"type": "state", "state": "working", "label": "Đang xử lý tác vụ nội bộ…"}
+        time.sleep(0.38)
+        yield {"type": "state", "state": "composing", "label": "Đang phản hồi…"}
+        for chunk in re.findall(r"\S+\s*", fast_reply):
+            yield {"type": "token", "delta": chunk}
+            time.sleep(0.014)
+        yield {"type": "done"}
+        return
+
+    # Luồng AI Local (Ollama Streaming thật từ GPU)
+    try:
+        model = _resolve_ollama_model()
+        if not model:
+            yield {"type": "state", "state": "shaping", "label": "Đang khởi tạo model…"}
+            yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
+            yield {"type": "done"}
+            return
+
+        now = datetime.now(VN_TZ)
+        ctx_lines = [
+            SYSTEM_PROMPT,
+            f"\n[Ngữ cảnh thời gian thực]: Bây giờ là {now.strftime('%H:%M:%S')} — {WEEKDAY_VI[now.weekday()]}, ngày {now.strftime('%d/%m/%Y')} (giờ Việt Nam).",
+        ]
+
+        # Nếu cần gọi Tool thời tiết thực tế để bổ sung dữ liệu vào prompt
+        if any(w in n for w in _WEATHER_TOPIC_KEYWORDS):
+            yield {"type": "state", "state": "searching", "label": "Đang lấy dữ liệu thời tiết thực tế…"}
+            city = _detect_city_in_text(n)
+            is_tomorrow = "ngay mai" in n or "tomorrow" in n
+            weather_info = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
+            ctx_lines.append(
+                f"[Dữ liệu thời tiết thực tế từ Open-Meteo]:\n{weather_info}\n"
+                "(Hãy dùng chính xác số liệu thời tiết trên để trả lời hoặc tư vấn cho Nguyen)."
+            )
+            yield {"type": "state", "state": "weaving", "label": "Đang đan ghép dữ liệu vào ngữ cảnh AI…"}
+            time.sleep(0.28)
+
+        system_content = "\n".join(ctx_lines)
+        max_msgs = MAX_HISTORY_TURNS * 2
+        messages = (
+            [{"role": "system", "content": system_content}]
+            + _CHAT_HISTORY[-max_msgs:]
+            + [{"role": "user", "content": raw}]
+        )
+
+        # Giai đoạn Prefill / Suy luận trên GPU trước khi sinh token đầu tiên
+        yield {"type": "state", "state": "solving", "label": "Đang suy luận trên GPU…"}
+
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "options": {"temperature": 0.35},
+            }
+        ).encode("utf-8")
+
+        req = urllib.request.Request(
+            OLLAMA_CHAT_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        full_reply_parts: list[str] = []
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                chunk_data = json.loads(line)
+                delta = (chunk_data.get("message") or {}).get("content", "")
+                if delta:
+                    full_reply_parts.append(delta)
+                    yield {"type": "token", "delta": delta}
+                if chunk_data.get("done"):
+                    break
+
+        full_reply = "".join(full_reply_parts).strip()
+        if not full_reply:
+            yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
+        else:
+            _CHAT_HISTORY.append({"role": "user", "content": raw})
+            _CHAT_HISTORY.append({"role": "assistant", "content": full_reply})
+            if len(_CHAT_HISTORY) > max_msgs:
+                del _CHAT_HISTORY[:-max_msgs]
+
+        yield {"type": "done"}
+    except Exception:
+        yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
+        yield {"type": "done"}
+
 
