@@ -736,9 +736,8 @@ const modeChatBtn = document.getElementById("modeChatBtn");
 const modeVoiceBtn = document.getElementById("modeVoiceBtn");
 const quickVoiceBtn = document.getElementById("quickVoiceBtn");
 const voiceTranscriptEl = document.getElementById("voiceTranscript");
-const voiceMicToggleBtn = document.getElementById("voiceMicToggleBtn");
-const voiceInterruptBtn = document.getElementById("voiceInterruptBtn");
-const voiceExitBtn = document.getElementById("voiceExitBtn");
+const voiceWaveCanvas = document.getElementById("voiceWaveCanvas");
+const voiceWaveWrap = document.getElementById("voiceWaveWrap");
 
 const chatEl = document.getElementById("chat");
 const msgInput = document.getElementById("msg");
@@ -763,12 +762,15 @@ let pendingVoiceDraft = "";
 let isSpeakingTTS = false;
 let activeUtteranceCount = 0;
 let ttsSpokenCharIndex = 0;
+let ttsPulseBoost = 0;
 
-// Web Audio API đo âm lượng giọng nói thật từ Mic để điều khiển nhịp sóng của Orb
+// Web Audio API đo âm lượng thật từ Mic & điều khiển Sóng Âm (Waveform) + Orb Wave
 let micAudioCtx = null;
 let micAnalyser = null;
 let micStream = null;
-let micMeterRaf = 0;
+let waveLoopRaf = 0;
+let smoothAudioLevel = 0; // 0..1 biên độ âm thanh đã làm mượt
+let lastSoundDetectedMs = 0;
 
 // Telemetry theo dõi nhịp gõ phím của người dùng ở Chế độ Chat
 const keystrokeTimes = [];
@@ -797,10 +799,9 @@ function syncIdleState() {
   consecutiveDeletes = 0;
   if (currentAppMode === "voice") {
     if (voiceMicMuted) {
-      setOrbVisualState("breathing", "Mic đang tạm tắt", 0.85);
-      setVoiceSubtitle("Bấm biểu tượng Mic bên dưới để tiếp tục trò chuyện.", true);
+      setOrbVisualState("breathing", "Đang tạm dừng nghe (chạm quả cầu để bật lại)", 0.85);
     } else {
-      setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1);
+      setOrbVisualState("breathing", "Đang lắng nghe…", 0.95);
     }
   } else {
     setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing, 1);
@@ -854,7 +855,11 @@ function delay(ms) {
 }
 
 /* ==========================================================================
-   PHẦN 3: HỆ THỐNG GIỌNG NÓI 2 CHIỀU TIẾNG VIỆT (STT + TTS + AUDIO METER)
+   PHẦN 3: SÓNG ÂM THANH TRỰC TIẾP (LIVE WAVEFORM) & GIỌNG NÓI 2 CHIỀU
+   - Khi im lặng: đường sóng phẳng dịu nhẹ, quả cầu ở trạng thái `breathing`
+   - Khi CÓ ÂM THANH (bạn nói vào Mic hoặc Wisp phát âm TTS):
+     + Quả cầu chuyển ngay sang hình thái sóng `listening` (`wave`)
+     + Canvas sóng âm bên dưới dao động dạng sóng đa hài (harmonic sound wave) theo cường độ âm thực tế
    ========================================================================== */
 
 function pickVietnameseVoice() {
@@ -862,7 +867,6 @@ function pickVietnameseVoice() {
   const voices = window.speechSynthesis.getVoices() || [];
   if (!voices.length) return null;
 
-  // Ưu tiên giọng đọc tiếng Việt tự nhiên (Edge Natural / Google Tiếng Việt / Microsoft An)
   const viVoices = voices.filter(
     (v) =>
       (v.lang && v.lang.toLowerCase().startsWith("vi")) ||
@@ -881,9 +885,6 @@ if ("speechSynthesis" in window) {
   };
 }
 
-/**
- * Làm sạch ký tự markdown / emoji trang trí để giọng đọc TTS tiếng Việt mượt và tự nhiên.
- */
 function cleanTextForSpeech(rawText) {
   return String(rawText || "")
     .replace(/```[\s\S]*?```/g, " Đã viết xong đoạn mã nguồn. ")
@@ -897,11 +898,9 @@ function cleanTextForSpeech(rawText) {
 function stopSpeaking() {
   activeUtteranceCount = 0;
   isSpeakingTTS = false;
+  ttsPulseBoost = 0;
   if ("speechSynthesis" in window) {
     window.speechSynthesis.cancel();
-  }
-  if (voiceInterruptBtn) {
-    voiceInterruptBtn.hidden = true;
   }
 }
 
@@ -919,30 +918,27 @@ function enqueueSpeechChunk(sentenceText) {
 
   activeUtteranceCount += 1;
   isSpeakingTTS = true;
-  if (voiceInterruptBtn) {
-    voiceInterruptBtn.hidden = false;
-  }
 
   utter.onstart = () => {
+    isSpeakingTTS = true;
+    ttsPulseBoost = 0.55;
+    lastSoundDetectedMs = performance.now();
     if (currentAppMode === "voice") {
-      setOrbVisualState("composing", "Wisp đang nói…", 1.22);
+      // Khi Wisp phát ra âm thanh -> chuyển quả cầu sang dạng sóng (wave)
+      setOrbVisualState("listening", "Wisp đang nói…", 1.25);
     }
   };
 
   utter.onboundary = () => {
-    if (currentAppMode === "voice" && centerOrb) {
-      // Nhịp năng lượng dao động tự nhiên theo từng âm tiết Wisp phát âm
-      centerOrb.setEnergy(1.12 + Math.random() * 0.35);
-    }
+    ttsPulseBoost = 0.45 + Math.random() * 0.45;
+    lastSoundDetectedMs = performance.now();
   };
 
   const onFinishOne = () => {
     activeUtteranceCount = Math.max(0, activeUtteranceCount - 1);
     if (activeUtteranceCount === 0) {
       isSpeakingTTS = false;
-      if (voiceInterruptBtn) {
-        voiceInterruptBtn.hidden = true;
-      }
+      ttsPulseBoost = 0;
     }
   };
 
@@ -952,9 +948,6 @@ function enqueueSpeechChunk(sentenceText) {
   window.speechSynthesis.speak(utter);
 }
 
-/**
- * Tách và đọc cuốn chiếu từng câu hoàn chỉnh ngay khi luồng token đang chảy về.
- */
 function feedStreamingTextToTTS(accumulatedText, isFinalFlush = false) {
   if (currentAppMode !== "voice" || !("speechSynthesis" in window)) return;
   const unspoken = accumulatedText.slice(ttsSpokenCharIndex);
@@ -966,7 +959,6 @@ function feedStreamingTextToTTS(accumulatedText, isFinalFlush = false) {
     return;
   }
 
-  // Tìm vị trí kết thúc câu (. ! ? hoặc xuống dòng)
   const sentenceMatch = unspoken.match(/^([\s\S]+?[.!?。\n]+)\s*/);
   if (sentenceMatch && sentenceMatch[1].trim().length >= 12) {
     const chunk = sentenceMatch[1];
@@ -986,7 +978,7 @@ function waitForSpeechToFinish(maxWaitMs = 45000) {
       if (!speaking || currentAppMode !== "voice" || performance.now() - start > maxWaitMs) {
         isSpeakingTTS = false;
         activeUtteranceCount = 0;
-        if (voiceInterruptBtn) voiceInterruptBtn.hidden = true;
+        ttsPulseBoost = 0;
         resolve();
       } else {
         setTimeout(check, 90);
@@ -997,9 +989,143 @@ function waitForSpeechToFinish(maxWaitMs = 45000) {
 }
 
 /**
- * Khởi tạo bộ đo âm lượng Microphone (Web Audio API) để quả cầu gợn sóng theo giọng thật.
+ * Vẽ sóng âm thanh trực tiếp lên `#voiceWaveCanvas` và kích hoạt hình thái `wave` của quả cầu khi có âm thanh.
  */
+function startAudioWaveVisualizer() {
+  if (waveLoopRaf) return;
+
+  const freqData = new Uint8Array(64);
+  let phase = 0;
+
+  function renderWaveLoop(now) {
+    if (currentAppMode !== "voice") {
+      waveLoopRaf = 0;
+      return;
+    }
+
+    // 1. Đo cường độ âm thanh thực tế (từ Mic khi người dùng nói hoặc từ nhịp TTS khi Wisp nói)
+    let rawLevel = 0;
+    if (isSpeakingTTS || ("speechSynthesis" in window && window.speechSynthesis.speaking)) {
+      const synthMod = 0.38 + 0.28 * Math.sin(now * 0.016) * Math.cos(now * 0.009) + ttsPulseBoost * 0.35;
+      rawLevel = Math.max(0.25, Math.min(1, synthMod));
+      ttsPulseBoost *= 0.92;
+      lastSoundDetectedMs = now;
+    } else if (micAnalyser && !voiceMicMuted && !isSending) {
+      micAnalyser.getByteFrequencyData(freqData);
+      let sum = 0;
+      // Tập trung dải tần giọng nói con người (bins 2..28)
+      const count = Math.min(28, freqData.length);
+      for (let i = 2; i < count; i++) {
+        sum += freqData[i];
+      }
+      const avg = sum / Math.max(1, count - 2);
+      // Ngưỡng lọc nhiễu nền (noise gate = 14)
+      if (avg > 14) {
+        rawLevel = Math.min(1, (avg - 14) / 72);
+        lastSoundDetectedMs = now;
+      }
+    }
+
+    // Làm mượt biên độ âm thanh
+    const smoothing = rawLevel > smoothAudioLevel ? 0.28 : 0.12;
+    smoothAudioLevel += (rawLevel - smoothAudioLevel) * smoothing;
+    if (smoothAudioLevel < 0.005) smoothAudioLevel = 0;
+
+    // 2. Đồng bộ trạng thái quả cầu Thinking Orb:
+    // Khi có âm thanh thực sự -> chuyển sang hình thái sóng `listening` (`wave`) với năng lượng theo âm lượng!
+    // Khi ngắt âm thanh (> 480ms) và không đang xử lý -> dịu về `breathing`
+    if (!isSending || isSpeakingTTS) {
+      const hasActiveSound = smoothAudioLevel > 0.06 || now - lastSoundDetectedMs < 420;
+      if (hasActiveSound) {
+        const waveEnergy = Math.max(0.95, Math.min(1.75, 0.92 + smoothAudioLevel * 0.95));
+        const caption = isSpeakingTTS ? "Wisp đang nói…" : "Đang nghe bạn nói…";
+        if (centerOrb) {
+          if (centerOrb.getState() !== "listening") {
+            setOrbVisualState("listening", caption, waveEnergy);
+          } else {
+            centerOrb.setEnergy(waveEnergy);
+            if (typingText && typingText.textContent !== caption) {
+              typingText.textContent = caption;
+            }
+          }
+        }
+      } else if (!isSending && centerOrb && centerOrb.getState() === "listening") {
+        syncIdleState();
+      }
+    }
+
+    // 3. Vẽ sóng âm đa hài (Multi-harmonic Sound Wave) lên #voiceWaveCanvas
+    if (voiceWaveCanvas) {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const cssW = 360;
+      const cssH = 64;
+      if (voiceWaveCanvas.width !== Math.round(cssW * dpr)) {
+        voiceWaveCanvas.width = Math.round(cssW * dpr);
+        voiceWaveCanvas.height = Math.round(cssH * dpr);
+      }
+      const ctx = voiceWaveCanvas.getContext("2d");
+      if (ctx) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+
+        const dark = isDarkMode();
+        const baseRgb = dark ? "244, 244, 246" : "15, 23, 42";
+        const midY = cssH / 2;
+        phase += 0.075 + smoothAudioLevel * 0.16;
+
+        // Nếu gần như im lặng: chỉ vẽ đường chân trời mảnh nhẹ
+        if (smoothAudioLevel < 0.02) {
+          ctx.beginPath();
+          ctx.strokeStyle = `rgba(${baseRgb}, 0.22)`;
+          ctx.lineWidth = 1.5;
+          ctx.moveTo(24, midY);
+          ctx.lineTo(cssW - 24, midY);
+          ctx.stroke();
+        } else {
+          // Khi có âm thanh: vẽ 3 lớp sóng giao thoa mượt với biên độ theo smoothAudioLevel
+          const maxAmp = (cssH * 0.42) * Math.min(1, smoothAudioLevel * 1.25);
+          const waves = [
+            { freq: 0.045, speed: 1.0, ampMul: 1.0, alpha: 0.88, width: 2.2 },
+            { freq: 0.068, speed: -1.35, ampMul: 0.65, alpha: 0.45, width: 1.5 },
+            { freq: 0.031, speed: 0.7, ampMul: 0.42, alpha: 0.26, width: 1.2 },
+          ];
+
+          for (const w of waves) {
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(${baseRgb}, ${w.alpha})`;
+            ctx.lineWidth = w.width;
+            const startX = 16;
+            const endX = cssW - 16;
+            const span = endX - startX;
+
+            for (let x = startX; x <= endX; x += 2) {
+              const normX = (x - startX) / span; // 0..1
+              // Hàm cửa sổ Hanning để 2 đầu mút thuôn mượt về 0
+              const envelope = Math.sin(normX * Math.PI) ** 1.6;
+              const y =
+                midY +
+                Math.sin(x * w.freq + phase * w.speed) *
+                  Math.cos(x * 0.015 - phase * 0.4) *
+                  maxAmp *
+                  w.ampMul *
+                  envelope;
+              if (x === startX) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+          }
+        }
+      }
+    }
+
+    waveLoopRaf = requestAnimationFrame(renderWaveLoop);
+  }
+
+  waveLoopRaf = requestAnimationFrame(renderWaveLoop);
+}
+
 async function startMicAudioMeter() {
+  startAudioWaveVisualizer();
   if (micAudioCtx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1007,36 +1133,20 @@ async function startMicAudioMeter() {
     micAudioCtx = new AudioCtx();
     const source = micAudioCtx.createMediaStreamSource(micStream);
     micAnalyser = micAudioCtx.createAnalyser();
-    micAnalyser.fftSize = 256;
+    micAnalyser.fftSize = 128;
+    micAnalyser.smoothingTimeConstant = 0.75;
     source.connect(micAnalyser);
-
-    const dataArray = new Uint8Array(micAnalyser.frequencyBinCount);
-    function updateMeter() {
-      if (currentAppMode !== "voice") return;
-      if (micAnalyser && !isSending && !isSpeakingTTS && !voiceMicMuted) {
-        micAnalyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-        const avg = sum / dataArray.length;
-        // Quy đổi biên độ âm thanh giọng nói thành năng lượng sóng của quả cầu (0.9x -> 1.7x)
-        const voiceEnergy = Math.max(0.9, Math.min(1.7, 0.88 + (avg / 55) * 0.75));
-        if (centerOrb && centerOrb.getState() === "listening") {
-          centerOrb.setEnergy(voiceEnergy);
-        }
-      }
-      micMeterRaf = requestAnimationFrame(updateMeter);
-    }
-    micMeterRaf = requestAnimationFrame(updateMeter);
   } catch (_err) {
-    // Nếu không lấy được stream raw audio thì SpeechRecognition vẫn hoạt động bình thường
+    // Nếu không lấy được raw stream thì SpeechRecognition vẫn chạy và tạo sóng khi nhận từ
   }
 }
 
 function stopMicAudioMeter() {
-  if (micMeterRaf) {
-    cancelAnimationFrame(micMeterRaf);
-    micMeterRaf = 0;
+  if (waveLoopRaf) {
+    cancelAnimationFrame(waveLoopRaf);
+    waveLoopRaf = 0;
   }
+  smoothAudioLevel = 0;
   if (micStream) {
     micStream.getTracks().forEach((t) => t.stop());
     micStream = null;
@@ -1061,9 +1171,6 @@ function initSpeechRecognition() {
 
   rec.onstart = () => {
     isRecognitionRunning = true;
-    if (currentAppMode === "voice" && !isSending && !isSpeakingTTS && !voiceMicMuted) {
-      setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.05);
-    }
   };
 
   rec.onresult = (event) => {
@@ -1073,6 +1180,10 @@ function initSpeechRecognition() {
     if (isSpeakingTTS) {
       stopSpeaking();
     }
+
+    // Kích hoạt xung âm thanh ngay cả khi trình duyệt dùng chung kênh mic với SpeechRecognition
+    smoothAudioLevel = Math.max(smoothAudioLevel, 0.55);
+    lastSoundDetectedMs = performance.now();
 
     let finalChunk = "";
     let interimChunk = "";
@@ -1097,7 +1208,6 @@ function initSpeechRecognition() {
 
     clearTimeout(silenceSendTimer);
     if (liveDisplay) {
-      // Đợi người dùng ngắt câu tự nhiên (900ms sau khi chốt từ) rồi tự động gửi cho Wisp
       const waitMs = finalChunk.trim() ? 750 : 1350;
       silenceSendTimer = setTimeout(() => {
         const textToSend = (pendingVoiceDraft || liveDisplay).trim();
@@ -1113,7 +1223,6 @@ function initSpeechRecognition() {
   rec.onerror = (event) => {
     if (event.error === "not-allowed" || event.error === "service-not-allowed") {
       voiceMicMuted = true;
-      updateMicButtonUI();
       setOrbVisualState("breathing", "Chưa cấp quyền Microphone", 0.85);
       setVoiceSubtitle("⚠️ Trình duyệt chưa được cấp quyền Microphone. Hãy cho phép Mic trên thanh địa chỉ nhé.", true);
     }
@@ -1121,7 +1230,6 @@ function initSpeechRecognition() {
 
   rec.onend = () => {
     isRecognitionRunning = false;
-    // Tự động duy trì lắng nghe rảnh tay nếu vẫn ở Chế độ Nói và không bận trả lời
     if (currentAppMode === "voice" && !voiceMicMuted && !isSending && !isSpeakingTTS) {
       setTimeout(() => {
         startVoiceListening();
@@ -1144,9 +1252,7 @@ function startVoiceListening() {
     try {
       pendingVoiceDraft = "";
       rec.start();
-    } catch (_e) {
-      // Đã start rồi thì bỏ qua
-    }
+    } catch (_e) {}
   }
 }
 
@@ -1159,12 +1265,6 @@ function stopVoiceListening() {
     } catch (_e) {}
   }
   isRecognitionRunning = false;
-}
-
-function updateMicButtonUI() {
-  if (!voiceMicToggleBtn) return;
-  voiceMicToggleBtn.classList.toggle("mic-active", !voiceMicMuted);
-  voiceMicToggleBtn.classList.toggle("mic-muted", voiceMicMuted);
 }
 
 /**
@@ -1186,9 +1286,8 @@ function switchAppMode(mode) {
 
   if (mode === "voice") {
     voiceMicMuted = false;
-    updateMicButtonUI();
     setVoiceSubtitle("Hãy nói gì đó với Wisp…", true);
-    setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.05);
+    syncIdleState();
     startMicAudioMeter();
     startVoiceListening();
   } else {
@@ -1206,24 +1305,20 @@ function switchAppMode(mode) {
    PHẦN 4: LUỒNG GỬI TIN NHẮN & STREAMING TOKEN ĐỒNG BỘ CẢ CHAT LẪN VOICE
    ========================================================================== */
 
-/**
- * Phân tích cấu trúc văn bản đang được AI sinh ra theo thời gian thực (live token stream):
- * - Nếu dòng chảy token đang mở khối code ```...``` -> chuyển sang `working` (orbits: viết mã nguồn)
- * - Nếu đang liệt kê danh sách nhiều mục / phân tích cấu trúc -> chuyển sang `weaving` (braid: đan dệt ý tưởng)
- * - Nếu đang viết câu trả lời tự nhiên -> giữ `composing` (ribbon: phản hồi mượt)
- * Đồng thời điều chỉnh năng lượng (energy) của quả cầu dựa trên tốc độ sinh token thực tế của GPU (tok/s).
- */
 function adaptOrbToLiveTokenStream(accumulatedText, tokensPerSec) {
   const energy = Math.max(0.95, Math.min(1.5, 0.9 + tokensPerSec / 45));
-  const fenceCount = (accumulatedText.match(/```/g) || []).length;
+  if (currentAppMode === "voice") {
+    // Trong Chế độ Nói, khi có âm thanh trả lời thì ưu tiên dạng sóng `listening` (`wave`)
+    setOrbVisualState("listening", "Wisp đang nói…", Math.max(1.15, energy));
+    return;
+  }
 
-  // Đang ở bên trong một khối code block chưa đóng
+  const fenceCount = (accumulatedText.match(/```/g) || []).length;
   if (fenceCount % 2 === 1) {
     setOrbVisualState("working", "Đang viết mã nguồn…", energy * 1.08);
     return;
   }
 
-  // Kiểm tra dòng hiện tại hoặc các dòng gần nhất có phải danh sách / bước cấu trúc không
   const recentWindow = accumulatedText.slice(-180);
   const bulletMatches = recentWindow.match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s+/g);
   if (bulletMatches && bulletMatches.length >= 2) {
@@ -1231,13 +1326,9 @@ function adaptOrbToLiveTokenStream(accumulatedText, tokensPerSec) {
     return;
   }
 
-  const label = currentAppMode === "voice" ? "Wisp đang nói…" : STATE_DESCRIPTIONS.composing;
-  setOrbVisualState("composing", label, energy);
+  setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, energy);
 }
 
-/**
- * Hiệu ứng gõ chữ mượt (dùng khi câu trả lời đến từ Fast-path hoặc fallback JSON).
- */
 async function streamBotMessage(fullText, existingBubble = null) {
   const target = existingBubble || createBotBubble();
   if (!target) return;
@@ -1263,9 +1354,6 @@ async function streamBotMessage(fullText, existingBubble = null) {
   scrollToBottom();
 }
 
-/**
- * Gửi tin nhắn (từ ô chat hoặc từ giọng nói) và đọc luồng sự kiện NDJSON thời gian thực từ `/api/chat/stream`.
- */
 async function sendMessage(presetText) {
   if (isSending) return;
 
@@ -1392,8 +1480,9 @@ async function sendMessage(presetText) {
     }
 
     if (pendingStateText !== null) {
+      const stateForReply = currentAppMode === "voice" ? "listening" : "composing";
       const label = currentAppMode === "voice" ? "Wisp đang nói…" : STATE_DESCRIPTIONS.composing;
-      setOrbVisualState("composing", label, 1.15);
+      setOrbVisualState(stateForReply, label, 1.2);
       if (currentAppMode === "voice") {
         feedStreamingTextToTTS(pendingStateText, true);
       }
@@ -1413,7 +1502,8 @@ async function sendMessage(presetText) {
       });
       const data = res.ok ? await res.json() : null;
       const reply = data && typeof data.reply === "string" && data.reply.trim() ? data.reply : FALLBACK_ERROR;
-      setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, 1.05);
+      const stateForReply = currentAppMode === "voice" ? "listening" : "composing";
+      setOrbVisualState(stateForReply, STATE_DESCRIPTIONS.composing, 1.15);
       if (currentAppMode === "voice") {
         feedStreamingTextToTTS(reply, true);
       }
@@ -1423,7 +1513,6 @@ async function sendMessage(presetText) {
     }
   }
 
-  // Nếu đang ở Chế độ Nói, chờ Wisp đọc xong câu trả lời rồi tự động bật lại Mic lắng nghe câu tiếp theo
   if (currentAppMode === "voice") {
     await waitForSpeechToFinish();
   } else {
@@ -1521,19 +1610,19 @@ if (modeVoiceBtn) {
 if (quickVoiceBtn) {
   quickVoiceBtn.addEventListener("click", () => switchAppMode("voice"));
 }
-if (voiceExitBtn) {
-  voiceExitBtn.addEventListener("click", () => switchAppMode("chat"));
-}
 
-// Nút Bật / Tạm dừng Mic trong Chế độ Nói
-if (voiceMicToggleBtn) {
-  voiceMicToggleBtn.addEventListener("click", () => {
-    if (currentAppMode !== "voice") return;
-    if (isSpeakingTTS) {
-      stopSpeaking();
-    }
+// Chạm vào dải sóng hoặc quả cầu trong Chế độ Nói để ngắt lời Wisp hoặc Bật/Tạm dừng nghe
+function handleVoiceStageTap() {
+  if (currentAppMode !== "voice") return;
+  if (isSpeakingTTS) {
+    stopSpeaking();
+    setVoiceSubtitle("Hãy nói tiếp với Wisp…", true);
+    syncIdleState();
+    startVoiceListening();
+    return;
+  }
+  if (!isSending) {
     voiceMicMuted = !voiceMicMuted;
-    updateMicButtonUI();
     if (voiceMicMuted) {
       stopVoiceListening();
       syncIdleState();
@@ -1542,35 +1631,20 @@ if (voiceMicToggleBtn) {
       syncIdleState();
       startVoiceListening();
     }
-  });
+  }
 }
 
-// Nút Ngắt lời Wisp khi Wisp đang đọc câu trả lời
-if (voiceInterruptBtn) {
-  voiceInterruptBtn.addEventListener("click", () => {
-    stopSpeaking();
-    if (currentAppMode === "voice" && !voiceMicMuted) {
-      setVoiceSubtitle("Đã ngắt lời — bạn hãy nói tiếp…", true);
-      setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.1);
-      startVoiceListening();
-    }
-  });
+if (voiceWaveWrap) {
+  voiceWaveWrap.addEventListener("click", handleVoiceStageTap);
 }
 
-// Bấm trực tiếp vào quả cầu để xem thử hình thái tiếp theo (khi ở Chế độ Chat)
 if (orbModeBtn) {
   orbModeBtn.addEventListener("click", () => {
-    if (isSending) return;
     if (currentAppMode === "voice") {
-      // Trong Chế độ Nói, bấm vào quả cầu khi Wisp đang nói sẽ ngắt lời để bạn nói luôn
-      if (isSpeakingTTS) {
-        stopSpeaking();
-        setVoiceSubtitle("Đã ngắt lời — bạn hãy nói tiếp…", true);
-        setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.1);
-        startVoiceListening();
-      }
+      handleVoiceStageTap();
       return;
     }
+    if (isSending) return;
     clearTimeout(previewResetTimer);
     const cur = centerOrb ? centerOrb.getState() : "breathing";
     const idx = (ALL_STATES.indexOf(cur) + 1) % ALL_STATES.length;
