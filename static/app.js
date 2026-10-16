@@ -1,11 +1,12 @@
 /**
- * Bot Local Web — Centerpiece Thinking Orb (thinking-orbs v0.3.2 by Jakub Antalik)
- * Giao diện tối giản chuẩn Grok / ChatGPT, 100% chạy local trên Canvas 2D.
+ * Bot Local Web — Tích hợp chuẩn xác thư viện thinking-orbs v0.3.2 (by Jakub Antalik)
+ * Giữ nguyên 100% thông số PRESETS[mode][64] gốc của libraries.dev/orbs
+ * kèm hiệu ứng chuyển mượt (crossfade) và vòng đời trạng thái AI tự động:
+ * Idle (breathing) -> Typing (listening) -> Thinking (searching/working/solving/connecting) -> Replying (composing) -> Idle (breathing).
  */
 
 /* ==========================================================================
-   PHẦN 1: ENGINE THINKING-ORBS (9 trạng thái 3D Canvas: orbits, globe, rubik,
-   wave, web, braid, ribbon, ring, morph)
+   PHẦN 1: ENGINE THINKING-ORBS V0.3.2 NGUYÊN BẢN (VIRTUAL 64PX SPEC)
    ========================================================================== */
 
 function lerp(a, b, f) {
@@ -62,9 +63,10 @@ function inkColor(w, alpha, dark, tint) {
   const ramp = (c) => Math.round(dark ? c * (1 - w) : c + (255 - c) * w);
   return `rgba(${ramp(tint.r)},${ramp(tint.g)},${ramp(tint.b)},${alpha})`;
 }
-function paint(ctx, dots, dark, rMin = 0.3, tint) {
+function paint(ctx, dots, dark, rMin = 0.3, tint, alphaMul = 1) {
   for (const d of dots) {
-    const alpha = d.a ?? 1;
+    const alpha = (d.a ?? 1) * alphaMul;
+    if (alpha < 0.015) continue;
     const w = Math.min(1, Math.max(0, d.white));
     ctx.fillStyle = inkColor(w, alpha, dark, tint);
     ctx.beginPath();
@@ -72,9 +74,10 @@ function paint(ctx, dots, dark, rMin = 0.3, tint) {
     ctx.fill();
   }
 }
-function paintLines(ctx, lines, dark, tint) {
+function paintLines(ctx, lines, dark, tint, alphaMul = 1) {
   for (const l of lines) {
-    const alpha = l.a ?? 1;
+    const alpha = (l.a ?? 1) * alphaMul;
+    if (alpha < 0.015) continue;
     const w = Math.min(1, Math.max(0, l.white));
     ctx.strokeStyle = inkColor(w, alpha, dark, tint);
     ctx.lineWidth = l.w;
@@ -94,9 +97,9 @@ function finalizeFrame(dots, lines, rMin = 0.3) {
   visible.sort((a, b) => a.z - b.z);
   return { dots: visible, lines: lines.filter((l) => (l.a ?? 1) >= 0.02) };
 }
-function paintFrame(ctx, frame, dark, tint) {
-  if (frame.lines.length) paintLines(ctx, frame.lines, dark, tint);
-  paint(ctx, frame.dots, dark, 0.3, tint);
+function paintFrame(ctx, frame, dark, tint, alphaMul = 1) {
+  if (frame.lines.length) paintLines(ctx, frame.lines, dark, tint, alphaMul);
+  paint(ctx, frame.dots, dark, 0.3, tint, alphaMul);
 }
 function radiusScale(size, pow) {
   return (size / 300) ** pow;
@@ -156,6 +159,7 @@ function scaleRadii(opts, scale) {
   return out;
 }
 
+// Giữ nguyên 100% BASE_PROFILES từ thinking-orbs@0.3.2
 const BASE_PROFILES = {
   globe: { latRings: 17, lonDensity: 44, rBase: 0.6, rDepth: 1.7, rBoost: 1, inkFar: 0.62, inkSpan: 0.54, rsPow: 0.6, rMin: 0.3 },
   orbits: { orbitN: 12, ghostN: 40, ghostR: 0.9, ghostA: 0.5, particles: 3, partR: 1.2, partRDepth: 1.6, rsPow: 0.6, rMin: 0.3 },
@@ -585,26 +589,31 @@ const STATE_TO_MODE = {
   shaping: "morph",
 };
 
-const PRESETS = {
-  orbits: { speed: 1.55, count: 1.0, size: 0.95 },
-  globe: { speed: 1.65, count: 0.72, size: 1.0, extra: { scanMul: 4.08, dimBase: 0.45 } },
-  rubik: { speed: 1.6, count: 0.65, size: 0.98 },
-  wave: { speed: 3.2, count: 0.65, size: 0.95 },
-  web: { speed: 2.6, count: 1.4, size: 0.92 },
-  braid: { speed: 1.45, count: 0.78, size: 0.95 },
-  ribbon: { speed: 1.95, count: 0.5, size: 0.85, extra: { spin: 0, bandMul: 3.9, wobMul: 1 } },
-  ring: { speed: 2.6, count: 0.45, size: 0.92, extra: { spin: 0, bandMul: 3.627, wobMul: 0.368 } },
-  morph: { speed: 2.1, count: 0.85, size: 0.42, extra: { spread: 1.45 } },
+// Giữ nguyên 100% PRESETS 64px gốc của thinking-orbs@0.3.2
+const PRESETS_64 = {
+  orbits: { speed: 1.885, count: 1, size: 1 },
+  globe: { speed: 2.015, count: 0.42, size: 1.15, extra: { scanMul: 4.08, dimBase: 0.45 } },
+  rubik: { speed: 1.82, count: 0.35, size: 1.05 },
+  wave: { speed: 4.388, count: 0.341, size: 1 },
+  web: { speed: 3.315, count: 1.35, size: 0.95 },
+  braid: { speed: 1.625, count: 0.5, size: 1 },
+  ribbon: { speed: 2.34, count: 0.25, size: 0.85, extra: { spin: 0, bandMul: 3.9, wobMul: 1 } },
+  ring: { speed: 3.24, count: 0.25, size: 0.956, extra: { spin: 0, bandMul: 3.627, wobMul: 0.368 } },
+  morph: { speed: 2.405, count: 0.702, size: 0.395, extra: { spread: 1.45 } },
 };
 
-function resolvePreset(state) {
-  const mode = STATE_TO_MODE[state] || "globe";
-  const preset = PRESETS[mode];
+const presetCache = new Map();
+function resolvePreset64(state) {
+  if (presetCache.has(state)) return presetCache.get(state);
+  const mode = STATE_TO_MODE[state] || "ring";
+  const preset = PRESETS_64[mode];
   let opts = { ...BASE_PROFILES[mode] };
   if (preset.count !== 1) opts = scaleCounts(opts, preset.count);
   if (preset.size !== 1) opts = scaleRadii(opts, preset.size);
   if (preset.extra) opts = { ...opts, ...preset.extra };
-  return { mode, speed: preset.speed, opts };
+  const resolved = { state, mode, speed: preset.speed, opts, frameFn: MODE_FRAMES[mode] };
+  presetCache.set(state, resolved);
+  return resolved;
 }
 
 function isDarkMode() {
@@ -612,66 +621,91 @@ function isDarkMode() {
 }
 
 /**
- * Khởi tạo ThinkingOrb trung tâm với độ phân giải cao.
+ * Mount ThinkingOrb render ở hệ tọa độ chuẩn VIRTUAL_SIZE = 64 của thư viện gốc
+ * nhưng phóng nét vector lên displaySize (128px) và có crossfade mượt khi đổi trạng thái.
  */
-function mountThinkingOrb(canvas, initialState = "searching", size = 168) {
+function mountThinkingOrb(canvas, initialState = "breathing", displaySize = 128) {
   if (!canvas) return null;
-  let currentState = initialState;
-  let speedMultiplier = 1;
+  const VIRTUAL_SIZE = 64;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(size * dpr);
-  canvas.height = Math.round(size * dpr);
-  canvas.style.width = `${size}px`;
-  canvas.style.height = `${size}px`;
+  canvas.width = Math.round(displaySize * dpr);
+  canvas.height = Math.round(displaySize * dpr);
+  canvas.style.width = `${displaySize}px`;
+  canvas.style.height = `${displaySize}px`;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
-  let preset = resolvePreset(currentState);
-  let frameFn = MODE_FRAMES[preset.mode];
-  let accTime = 0;
-  let lastNow = performance.now();
+  const scale = (displaySize / VIRTUAL_SIZE) * dpr;
+  let active = resolvePreset64(initialState);
+  let prev = null;
+  let transitionStart = 0;
+  const TRANSITION_MS = 280;
 
   function render(now) {
-    const dt = Math.min(0.05, Math.max(0, (now - lastNow) / 1000));
-    lastNow = now;
-    accTime += dt * preset.speed * speedMultiplier;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, size, size);
-    paintFrame(ctx, frameFn(size, accTime, preset.opts), isDarkMode());
+    const tSec = now / 1000;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.clearRect(0, 0, VIRTUAL_SIZE, VIRTUAL_SIZE);
+    const dark = isDarkMode();
+
+    if (prev) {
+      const p = Math.min(1, (now - transitionStart) / TRANSITION_MS);
+      const ease = p * p * (3 - 2 * p);
+      paintFrame(ctx, prev.frameFn(VIRTUAL_SIZE, tSec * prev.speed, prev.opts), dark, undefined, 1 - ease);
+      paintFrame(ctx, active.frameFn(VIRTUAL_SIZE, tSec * active.speed, active.opts), dark, undefined, ease);
+      if (p >= 1) prev = null;
+    } else {
+      paintFrame(ctx, active.frameFn(VIRTUAL_SIZE, tSec * active.speed, active.opts), dark);
+    }
+
     requestAnimationFrame(render);
   }
 
   requestAnimationFrame(render);
 
   return {
-    setState(nextState, nextSpeedMul = 1) {
-      currentState = nextState;
-      speedMultiplier = nextSpeedMul;
-      preset = resolvePreset(currentState);
-      frameFn = MODE_FRAMES[preset.mode];
+    setState(nextState) {
+      if (nextState === active.state) return;
+      prev = active;
+      active = resolvePreset64(nextState);
+      transitionStart = performance.now();
+    },
+    getState() {
+      return active.state;
     },
     getMode() {
-      return preset.mode;
+      return active.mode;
     },
   };
 }
 
 /* ==========================================================================
-   PHẦN 2: ĐIỀU KHIỂN GIAO DIỆN CHAT & TƯƠNG TÁC
+   PHẦN 2: VÒNG ĐỜI TRẠNG THÁI AI (AUTO AI LIFECYCLE + MANUAL SWITCHER)
    ========================================================================== */
 
 const FALLBACK_ERROR = "⚠️ Có lỗi gì đó, thử lại nhé.";
-const ORB_STATES = [
-  "searching",
-  "working",
-  "solving",
+const ALL_STATES = [
+  "breathing",
   "listening",
+  "working",
+  "searching",
+  "solving",
   "connecting",
   "weaving",
   "composing",
-  "breathing",
   "shaping",
 ];
+
+const STATE_DESCRIPTIONS = {
+  breathing: "breathing • Sẵn sàng",
+  listening: "listening • Đang lắng nghe bạn gõ…",
+  working: "working • Đang xử lý…",
+  searching: "searching • Đang tra cứu thời tiết…",
+  solving: "solving • Đang phân tích…",
+  connecting: "connecting • Đang kết nối…",
+  weaving: "weaving • Đang tổng hợp…",
+  composing: "composing • Đang soạn câu trả lời…",
+  shaping: "shaping • Đang định hình…",
+};
 
 const chatEl = document.getElementById("chat");
 const msgInput = document.getElementById("msg");
@@ -679,30 +713,37 @@ const sendBtn = document.getElementById("sendBtn");
 const typingText = document.getElementById("typingText");
 const centerOrbCanvas = document.getElementById("centerOrb");
 const orbModeBtn = document.getElementById("orbModeBtn");
+const orbStateSwitcher = document.getElementById("orbStateSwitcher");
 const themeToggleBtn = document.getElementById("themeToggleBtn");
 
 let isSending = false;
-let currentOrbIndex = 0;
-let labelTimer = 0;
+let pinnedMode = "auto"; // "auto" hoặc tên 1 trong 9 state
+let typingIdleTimer = 0;
+let composingTimer = 0;
 
-// Mount quả cầu Thinking Orb lớn ở chính giữa màn hình
-const centerOrb = mountThinkingOrb(centerOrbCanvas, ORB_STATES[currentOrbIndex], 168);
+const centerOrb = mountThinkingOrb(centerOrbCanvas, "breathing", 128);
 
-function showOrbLabel(text, autoHideMs = 0) {
-  if (!typingText) return;
-  clearTimeout(labelTimer);
-  if (!text) {
-    typingText.classList.remove("visible");
-    return;
+function setOrbVisualState(state, customCaption) {
+  if (!centerOrb) return;
+  centerOrb.setState(state);
+  if (typingText) {
+    typingText.textContent = customCaption || STATE_DESCRIPTIONS[state] || state;
+    typingText.classList.add("visible");
   }
-  typingText.textContent = text;
-  typingText.classList.add("visible");
-  if (autoHideMs > 0) {
-    labelTimer = setTimeout(() => {
-      if (!isSending) {
-        typingText.classList.remove("visible");
-      }
-    }, autoHideMs);
+}
+
+function updateActivePillUI(selected) {
+  if (!orbStateSwitcher) return;
+  orbStateSwitcher.querySelectorAll(".state-pill").forEach((btn) => {
+    btn.classList.toggle("active", btn.getAttribute("data-state") === selected);
+  });
+}
+
+function syncIdleOrPinnedState() {
+  if (pinnedMode !== "auto") {
+    setOrbVisualState(pinnedMode, `${pinnedMode} (${STATE_TO_MODE[pinnedMode]})`);
+  } else {
+    setOrbVisualState("breathing", "breathing • Sẵn sàng");
   }
 }
 
@@ -730,18 +771,18 @@ function scrollToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
-function pickOrbStateForQuery(query) {
+function pickThinkingStateForQuery(query) {
   const q = query.toLowerCase();
-  if (q.includes("thời tiết") || q.includes("thoi tiet") || q.includes("weather")) {
-    return { state: "searching", label: "Bot đang trả lời…" };
+  if (q.includes("thời tiết") || q.includes("thoi tiet") || q.includes("weather") || q.includes("nhiệt độ")) {
+    return { state: "searching", label: "searching • Bot đang tra cứu thời tiết…" };
   }
-  if (q.includes("giờ") || q.includes("gio") || q.includes("hôm nay") || q.includes("hom nay")) {
-    return { state: "working", label: "Bot đang trả lời…" };
+  if (q.includes("giờ") || q.includes("gio") || q.includes("hôm nay") || q.includes("hom nay") || q.includes("ngày")) {
+    return { state: "working", label: "working • Bot đang xem giờ…" };
   }
-  if (q.includes("help")) {
-    return { state: "connecting", label: "Bot đang trả lời…" };
+  if (q.includes("help") || q.includes("trợ giúp")) {
+    return { state: "connecting", label: "connecting • Bot đang trả lời…" };
   }
-  return { state: "solving", label: "Bot đang trả lời…" };
+  return { state: "solving", label: "solving • Bot đang suy nghĩ…" };
 }
 
 function appendMessage(text, sender) {
@@ -763,20 +804,8 @@ function appendMessage(text, sender) {
   scrollToBottom();
 }
 
-function setSendingState(sending, queryText = "") {
-  isSending = sending;
-  if (sendBtn) sendBtn.disabled = sending;
-  if (msgInput) msgInput.disabled = sending;
-
-  if (sending) {
-    const { state, label } = pickOrbStateForQuery(queryText);
-    if (centerOrb) centerOrb.setState(state, 1.45);
-    showOrbLabel(label, 0);
-  } else {
-    if (centerOrb) centerOrb.setState(ORB_STATES[currentOrbIndex], 1.0);
-    showOrbLabel("", 0);
-  }
-  scrollToBottom();
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function sendMessage(presetText) {
@@ -789,6 +818,9 @@ async function sendMessage(presetText) {
     return;
   }
 
+  clearTimeout(typingIdleTimer);
+  clearTimeout(composingTimer);
+
   appendMessage(message, "user");
   if (typeof presetText !== "string" && msgInput) {
     msgInput.value = "";
@@ -796,7 +828,16 @@ async function sendMessage(presetText) {
     msgInput.value = "";
   }
 
-  setSendingState(true, message);
+  isSending = true;
+  if (sendBtn) sendBtn.disabled = true;
+  if (msgInput) msgInput.disabled = true;
+
+  // Bước 1: Chuyển sang trạng thái Thinking theo ngữ cảnh câu hỏi
+  const { state: thinkingState, label: thinkingLabel } = pickThinkingStateForQuery(message);
+  setOrbVisualState(thinkingState, thinkingLabel);
+
+  const startMs = performance.now();
+  let replyText = FALLBACK_ERROR;
 
   try {
     const response = await fetch("/api/chat", {
@@ -807,36 +848,87 @@ async function sendMessage(presetText) {
       body: JSON.stringify({ message }),
     });
 
-    if (!response.ok) {
-      appendMessage(FALLBACK_ERROR, "bot");
-      return;
+    if (response.ok) {
+      const data = await response.json();
+      if (data && typeof data.reply === "string" && data.reply.trim() !== "") {
+        replyText = data.reply;
+      }
     }
-
-    const data = await response.json();
-    const reply =
-      data && typeof data.reply === "string" && data.reply.trim() !== ""
-        ? data.reply
-        : FALLBACK_ERROR;
-    appendMessage(reply, "bot");
   } catch (_err) {
-    appendMessage(FALLBACK_ERROR, "bot");
-  } finally {
-    setSendingState(false);
-    if (msgInput) {
-      msgInput.focus();
-    }
+    replyText = FALLBACK_ERROR;
   }
+
+  // Đảm bảo hiệu ứng Thinking hiển thị tối thiểu 650ms để mắt người nhìn rõ chuyển động Orb
+  const elapsed = performance.now() - startMs;
+  if (elapsed < 650) {
+    await delay(650 - elapsed);
+  }
+
+  // Bước 2: Chuyển sang trạng thái Composing khi hiển thị câu trả lời
+  setOrbVisualState("composing", "composing • Đang phản hồi…");
+  appendMessage(replyText, "bot");
+
+  isSending = false;
+  if (sendBtn) sendBtn.disabled = false;
+  if (msgInput) {
+    msgInput.disabled = false;
+    msgInput.focus();
+  }
+
+  // Bước 3: Sau 950ms tự động dịu về trạng thái Idle (breathing) hoặc trạng thái user đã ghim
+  composingTimer = setTimeout(() => {
+    if (!isSending) {
+      syncIdleOrPinnedState();
+    }
+  }, 950);
 }
 
-// Bấm vào quả cầu Thinking Orb ở giữa màn hình để đổi qua 9 hình thái 3D
+// Khi user gõ phím trong ô input -> ở chế độ Auto AI sẽ chuyển Orb sang "listening" (wave)
+if (msgInput) {
+  msgInput.addEventListener("input", () => {
+    if (isSending || pinnedMode !== "auto") return;
+    clearTimeout(typingIdleTimer);
+    if (msgInput.value.trim().length > 0) {
+      setOrbVisualState("listening", "listening • Đang lắng nghe…");
+      typingIdleTimer = setTimeout(() => {
+        if (!isSending && pinnedMode === "auto") {
+          syncIdleOrPinnedState();
+        }
+      }, 1800);
+    } else {
+      syncIdleOrPinnedState();
+    }
+  });
+
+  msgInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      sendMessage();
+    }
+  });
+}
+
+// Chọn trạng thái trên thanh pill switcher
+if (orbStateSwitcher) {
+  orbStateSwitcher.addEventListener("click", (e) => {
+    const pill = e.target.closest(".state-pill");
+    if (!pill) return;
+    const chosen = pill.getAttribute("data-state") || "auto";
+    pinnedMode = chosen;
+    updateActivePillUI(chosen);
+    syncIdleOrPinnedState();
+  });
+}
+
+// Bấm trực tiếp vào quả cầu để xoay vòng qua các trạng thái
 if (orbModeBtn) {
   orbModeBtn.addEventListener("click", () => {
-    currentOrbIndex = (currentOrbIndex + 1) % ORB_STATES.length;
-    const nextState = ORB_STATES[currentOrbIndex];
-    if (centerOrb) {
-      centerOrb.setState(nextState, 1.0);
-      showOrbLabel(centerOrb.getMode(), 1400);
-    }
+    const cur = centerOrb ? centerOrb.getState() : "breathing";
+    const idx = (ALL_STATES.indexOf(cur) + 1) % ALL_STATES.length;
+    const next = ALL_STATES[idx];
+    pinnedMode = next;
+    updateActivePillUI(next);
+    syncIdleOrPinnedState();
   });
 }
 
@@ -861,15 +953,6 @@ if (chatEl) {
 if (sendBtn) {
   sendBtn.addEventListener("click", () => {
     sendMessage();
-  });
-}
-
-if (msgInput) {
-  msgInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      sendMessage();
-    }
   });
 }
 

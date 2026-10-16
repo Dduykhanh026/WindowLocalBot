@@ -19,11 +19,25 @@
 
   <div class="chat-container">
     <section class="orb-stage">
-      <button type="button" id="orbModeBtn" class="orb-hero-btn" title="Bấm để đổi hình thái Thinking Orb">
-        <canvas id="centerOrb" width="168" height="168" aria-label="Thinking Orb"></canvas>
-      </button>
+      <div class="orb-canvas-wrap" id="orbModeBtn" title="Bấm để đổi trạng thái hoặc chọn bên dưới">
+        <canvas id="centerOrb" width="128" height="128" aria-label="Thinking Orb"></canvas>
+      </div>
+
       <div id="typingIndicator" class="orb-status" aria-live="polite">
-        <span id="typingText" class="orb-status-text"></span>
+        <span id="typingText" class="orb-status-text visible">breathing</span>
+      </div>
+
+      <div class="orb-state-switcher" id="orbStateSwitcher" role="tablist" aria-label="Trạng thái Thinking Orb">
+        <button type="button" class="state-pill active" data-state="auto">Auto AI</button>
+        <button type="button" class="state-pill" data-state="breathing">breathing</button>
+        <button type="button" class="state-pill" data-state="listening">listening</button>
+        <button type="button" class="state-pill" data-state="working">working</button>
+        <button type="button" class="state-pill" data-state="searching">searching</button>
+        <button type="button" class="state-pill" data-state="solving">solving</button>
+        <button type="button" class="state-pill" data-state="connecting">connecting</button>
+        <button type="button" class="state-pill" data-state="weaving">weaving</button>
+        <button type="button" class="state-pill" data-state="composing">composing</button>
+        <button type="button" class="state-pill" data-state="shaping">shaping</button>
       </div>
     </section>
 
