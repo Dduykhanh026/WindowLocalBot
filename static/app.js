@@ -731,6 +731,15 @@ const STATE_DESCRIPTIONS = {
   shaping: "Đang định hình ý tưởng…",
 };
 
+const appLayout = document.getElementById("appLayout");
+const modeChatBtn = document.getElementById("modeChatBtn");
+const modeVoiceBtn = document.getElementById("modeVoiceBtn");
+const quickVoiceBtn = document.getElementById("quickVoiceBtn");
+const voiceTranscriptEl = document.getElementById("voiceTranscript");
+const voiceMicToggleBtn = document.getElementById("voiceMicToggleBtn");
+const voiceInterruptBtn = document.getElementById("voiceInterruptBtn");
+const voiceExitBtn = document.getElementById("voiceExitBtn");
+
 const chatEl = document.getElementById("chat");
 const msgInput = document.getElementById("msg");
 const sendBtn = document.getElementById("sendBtn");
@@ -739,12 +748,29 @@ const centerOrbCanvas = document.getElementById("centerOrb");
 const orbModeBtn = document.getElementById("orbModeBtn");
 const themeToggleBtn = document.getElementById("themeToggleBtn");
 
+let currentAppMode = "chat"; // "chat" | "voice"
 let isSending = false;
 let typingIdleTimer = 0;
 let typingShapeTimer = 0;
 let previewResetTimer = 0;
 
-// Telemetry theo dõi nhịp gõ phím của người dùng
+// Trạng thái Chế độ Nói (2-Way Hands-free Voice Mode)
+let voiceMicMuted = false;
+let isRecognitionRunning = false;
+let speechRec = null;
+let silenceSendTimer = 0;
+let pendingVoiceDraft = "";
+let isSpeakingTTS = false;
+let activeUtteranceCount = 0;
+let ttsSpokenCharIndex = 0;
+
+// Web Audio API đo âm lượng giọng nói thật từ Mic để điều khiển nhịp sóng của Orb
+let micAudioCtx = null;
+let micAnalyser = null;
+let micStream = null;
+let micMeterRaf = 0;
+
+// Telemetry theo dõi nhịp gõ phím của người dùng ở Chế độ Chat
 const keystrokeTimes = [];
 let prevInputLength = 0;
 let consecutiveDeletes = 0;
@@ -761,9 +787,24 @@ function setOrbVisualState(state, customCaption, energy = 1) {
   }
 }
 
+function setVoiceSubtitle(text, isMuted = false) {
+  if (!voiceTranscriptEl) return;
+  voiceTranscriptEl.textContent = text;
+  voiceTranscriptEl.classList.toggle("muted", Boolean(isMuted));
+}
+
 function syncIdleState() {
   consecutiveDeletes = 0;
-  setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing, 1);
+  if (currentAppMode === "voice") {
+    if (voiceMicMuted) {
+      setOrbVisualState("breathing", "Mic đang tạm tắt", 0.85);
+      setVoiceSubtitle("Bấm biểu tượng Mic bên dưới để tiếp tục trò chuyện.", true);
+    } else {
+      setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1);
+    }
+  } else {
+    setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing, 1);
+  }
 }
 
 /**
@@ -812,6 +853,359 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/* ==========================================================================
+   PHẦN 3: HỆ THỐNG GIỌNG NÓI 2 CHIỀU TIẾNG VIỆT (STT + TTS + AUDIO METER)
+   ========================================================================== */
+
+function pickVietnameseVoice() {
+  if (!("speechSynthesis" in window)) return null;
+  const voices = window.speechSynthesis.getVoices() || [];
+  if (!voices.length) return null;
+
+  // Ưu tiên giọng đọc tiếng Việt tự nhiên (Edge Natural / Google Tiếng Việt / Microsoft An)
+  const viVoices = voices.filter(
+    (v) =>
+      (v.lang && v.lang.toLowerCase().startsWith("vi")) ||
+      /vietnam|tiếng việt|hoaimy|namminh|microsoft an/i.test(v.name)
+  );
+  if (viVoices.length > 0) {
+    const natural = viVoices.find((v) => /natural|online|hoaimy|namminh|google/i.test(v.name));
+    return natural || viVoices[0];
+  }
+  return null;
+}
+
+if ("speechSynthesis" in window) {
+  window.speechSynthesis.onvoiceschanged = () => {
+    pickVietnameseVoice();
+  };
+}
+
+/**
+ * Làm sạch ký tự markdown / emoji trang trí để giọng đọc TTS tiếng Việt mượt và tự nhiên.
+ */
+function cleanTextForSpeech(rawText) {
+  return String(rawText || "")
+    .replace(/```[\s\S]*?```/g, " Đã viết xong đoạn mã nguồn. ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[*_#~>|]/g, " ")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stopSpeaking() {
+  activeUtteranceCount = 0;
+  isSpeakingTTS = false;
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
+  if (voiceInterruptBtn) {
+    voiceInterruptBtn.hidden = true;
+  }
+}
+
+function enqueueSpeechChunk(sentenceText) {
+  if (currentAppMode !== "voice" || !("speechSynthesis" in window)) return;
+  const clean = cleanTextForSpeech(sentenceText);
+  if (!clean) return;
+
+  const utter = new SpeechSynthesisUtterance(clean);
+  utter.lang = "vi-VN";
+  const viVoice = pickVietnameseVoice();
+  if (viVoice) utter.voice = viVoice;
+  utter.rate = 1.05;
+  utter.pitch = 1.0;
+
+  activeUtteranceCount += 1;
+  isSpeakingTTS = true;
+  if (voiceInterruptBtn) {
+    voiceInterruptBtn.hidden = false;
+  }
+
+  utter.onstart = () => {
+    if (currentAppMode === "voice") {
+      setOrbVisualState("composing", "Wisp đang nói…", 1.22);
+    }
+  };
+
+  utter.onboundary = () => {
+    if (currentAppMode === "voice" && centerOrb) {
+      // Nhịp năng lượng dao động tự nhiên theo từng âm tiết Wisp phát âm
+      centerOrb.setEnergy(1.12 + Math.random() * 0.35);
+    }
+  };
+
+  const onFinishOne = () => {
+    activeUtteranceCount = Math.max(0, activeUtteranceCount - 1);
+    if (activeUtteranceCount === 0) {
+      isSpeakingTTS = false;
+      if (voiceInterruptBtn) {
+        voiceInterruptBtn.hidden = true;
+      }
+    }
+  };
+
+  utter.onend = onFinishOne;
+  utter.onerror = onFinishOne;
+
+  window.speechSynthesis.speak(utter);
+}
+
+/**
+ * Tách và đọc cuốn chiếu từng câu hoàn chỉnh ngay khi luồng token đang chảy về.
+ */
+function feedStreamingTextToTTS(accumulatedText, isFinalFlush = false) {
+  if (currentAppMode !== "voice" || !("speechSynthesis" in window)) return;
+  const unspoken = accumulatedText.slice(ttsSpokenCharIndex);
+  if (!unspoken) return;
+
+  if (isFinalFlush) {
+    ttsSpokenCharIndex = accumulatedText.length;
+    enqueueSpeechChunk(unspoken);
+    return;
+  }
+
+  // Tìm vị trí kết thúc câu (. ! ? hoặc xuống dòng)
+  const sentenceMatch = unspoken.match(/^([\s\S]+?[.!?。\n]+)\s*/);
+  if (sentenceMatch && sentenceMatch[1].trim().length >= 12) {
+    const chunk = sentenceMatch[1];
+    ttsSpokenCharIndex += chunk.length;
+    enqueueSpeechChunk(chunk);
+  }
+}
+
+function waitForSpeechToFinish(maxWaitMs = 45000) {
+  return new Promise((resolve) => {
+    const start = performance.now();
+    function check() {
+      const speaking =
+        isSpeakingTTS ||
+        activeUtteranceCount > 0 ||
+        ("speechSynthesis" in window && window.speechSynthesis.speaking);
+      if (!speaking || currentAppMode !== "voice" || performance.now() - start > maxWaitMs) {
+        isSpeakingTTS = false;
+        activeUtteranceCount = 0;
+        if (voiceInterruptBtn) voiceInterruptBtn.hidden = true;
+        resolve();
+      } else {
+        setTimeout(check, 90);
+      }
+    }
+    check();
+  });
+}
+
+/**
+ * Khởi tạo bộ đo âm lượng Microphone (Web Audio API) để quả cầu gợn sóng theo giọng thật.
+ */
+async function startMicAudioMeter() {
+  if (micAudioCtx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    micAudioCtx = new AudioCtx();
+    const source = micAudioCtx.createMediaStreamSource(micStream);
+    micAnalyser = micAudioCtx.createAnalyser();
+    micAnalyser.fftSize = 256;
+    source.connect(micAnalyser);
+
+    const dataArray = new Uint8Array(micAnalyser.frequencyBinCount);
+    function updateMeter() {
+      if (currentAppMode !== "voice") return;
+      if (micAnalyser && !isSending && !isSpeakingTTS && !voiceMicMuted) {
+        micAnalyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+        const avg = sum / dataArray.length;
+        // Quy đổi biên độ âm thanh giọng nói thành năng lượng sóng của quả cầu (0.9x -> 1.7x)
+        const voiceEnergy = Math.max(0.9, Math.min(1.7, 0.88 + (avg / 55) * 0.75));
+        if (centerOrb && centerOrb.getState() === "listening") {
+          centerOrb.setEnergy(voiceEnergy);
+        }
+      }
+      micMeterRaf = requestAnimationFrame(updateMeter);
+    }
+    micMeterRaf = requestAnimationFrame(updateMeter);
+  } catch (_err) {
+    // Nếu không lấy được stream raw audio thì SpeechRecognition vẫn hoạt động bình thường
+  }
+}
+
+function stopMicAudioMeter() {
+  if (micMeterRaf) {
+    cancelAnimationFrame(micMeterRaf);
+    micMeterRaf = 0;
+  }
+  if (micStream) {
+    micStream.getTracks().forEach((t) => t.stop());
+    micStream = null;
+  }
+  if (micAudioCtx) {
+    micAudioCtx.close().catch(() => {});
+    micAudioCtx = null;
+    micAnalyser = null;
+  }
+}
+
+function initSpeechRecognition() {
+  if (speechRec) return speechRec;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return null;
+
+  const rec = new SpeechRecognition();
+  rec.lang = "vi-VN";
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.maxAlternatives = 1;
+
+  rec.onstart = () => {
+    isRecognitionRunning = true;
+    if (currentAppMode === "voice" && !isSending && !isSpeakingTTS && !voiceMicMuted) {
+      setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.05);
+    }
+  };
+
+  rec.onresult = (event) => {
+    if (currentAppMode !== "voice" || voiceMicMuted || isSending) return;
+
+    // Nếu Wisp đang nói mà người dùng cất tiếng nói mới -> tự động ngắt lời Wisp (Barge-in)
+    if (isSpeakingTTS) {
+      stopSpeaking();
+    }
+
+    let finalChunk = "";
+    let interimChunk = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalChunk += transcript + " ";
+      } else {
+        interimChunk += transcript;
+      }
+    }
+
+    if (finalChunk.trim()) {
+      pendingVoiceDraft = (pendingVoiceDraft + " " + finalChunk).replace(/\s+/g, " ").trim();
+    }
+
+    const liveDisplay = (pendingVoiceDraft + " " + interimChunk).replace(/\s+/g, " ").trim();
+    if (liveDisplay) {
+      setVoiceSubtitle(`“${liveDisplay}”`, false);
+      setOrbVisualState("listening", "Đang nghe bạn nói…", 1.32);
+    }
+
+    clearTimeout(silenceSendTimer);
+    if (liveDisplay) {
+      // Đợi người dùng ngắt câu tự nhiên (900ms sau khi chốt từ) rồi tự động gửi cho Wisp
+      const waitMs = finalChunk.trim() ? 750 : 1350;
+      silenceSendTimer = setTimeout(() => {
+        const textToSend = (pendingVoiceDraft || liveDisplay).trim();
+        pendingVoiceDraft = "";
+        if (textToSend && currentAppMode === "voice" && !isSending) {
+          stopVoiceListening();
+          sendMessage(textToSend);
+        }
+      }, waitMs);
+    }
+  };
+
+  rec.onerror = (event) => {
+    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+      voiceMicMuted = true;
+      updateMicButtonUI();
+      setOrbVisualState("breathing", "Chưa cấp quyền Microphone", 0.85);
+      setVoiceSubtitle("⚠️ Trình duyệt chưa được cấp quyền Microphone. Hãy cho phép Mic trên thanh địa chỉ nhé.", true);
+    }
+  };
+
+  rec.onend = () => {
+    isRecognitionRunning = false;
+    // Tự động duy trì lắng nghe rảnh tay nếu vẫn ở Chế độ Nói và không bận trả lời
+    if (currentAppMode === "voice" && !voiceMicMuted && !isSending && !isSpeakingTTS) {
+      setTimeout(() => {
+        startVoiceListening();
+      }, 220);
+    }
+  };
+
+  speechRec = rec;
+  return rec;
+}
+
+function startVoiceListening() {
+  if (currentAppMode !== "voice" || voiceMicMuted || isSending || isSpeakingTTS) return;
+  const rec = initSpeechRecognition();
+  if (!rec) {
+    setVoiceSubtitle("⚠️ Trình duyệt này không hỗ trợ nhận diện giọng nói (hãy dùng Microsoft Edge hoặc Chrome).", true);
+    return;
+  }
+  if (!isRecognitionRunning) {
+    try {
+      pendingVoiceDraft = "";
+      rec.start();
+    } catch (_e) {
+      // Đã start rồi thì bỏ qua
+    }
+  }
+}
+
+function stopVoiceListening() {
+  clearTimeout(silenceSendTimer);
+  pendingVoiceDraft = "";
+  if (speechRec && isRecognitionRunning) {
+    try {
+      speechRec.stop();
+    } catch (_e) {}
+  }
+  isRecognitionRunning = false;
+}
+
+function updateMicButtonUI() {
+  if (!voiceMicToggleBtn) return;
+  voiceMicToggleBtn.classList.toggle("mic-active", !voiceMicMuted);
+  voiceMicToggleBtn.classList.toggle("mic-muted", voiceMicMuted);
+}
+
+/**
+ * Chuyển đổi giữa 2 chế độ: "chat" (Chia đôi 50/50) và "voice" (Toàn màn hình đàm thoại 2 chiều).
+ */
+function switchAppMode(mode) {
+  if (mode !== "chat" && mode !== "voice") return;
+  currentAppMode = mode;
+
+  if (appLayout) {
+    appLayout.setAttribute("data-mode", mode);
+  }
+  if (modeChatBtn) {
+    modeChatBtn.classList.toggle("active", mode === "chat");
+  }
+  if (modeVoiceBtn) {
+    modeVoiceBtn.classList.toggle("active", mode === "voice");
+  }
+
+  if (mode === "voice") {
+    voiceMicMuted = false;
+    updateMicButtonUI();
+    setVoiceSubtitle("Hãy nói gì đó với Wisp…", true);
+    setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.05);
+    startMicAudioMeter();
+    startVoiceListening();
+  } else {
+    stopVoiceListening();
+    stopMicAudioMeter();
+    stopSpeaking();
+    syncIdleState();
+    if (msgInput && !isSending) {
+      setTimeout(() => msgInput.focus(), 150);
+    }
+  }
+}
+
+/* ==========================================================================
+   PHẦN 4: LUỒNG GỬI TIN NHẮN & STREAMING TOKEN ĐỒNG BỘ CẢ CHAT LẪN VOICE
+   ========================================================================== */
+
 /**
  * Phân tích cấu trúc văn bản đang được AI sinh ra theo thời gian thực (live token stream):
  * - Nếu dòng chảy token đang mở khối code ```...``` -> chuyển sang `working` (orbits: viết mã nguồn)
@@ -837,7 +1231,8 @@ function adaptOrbToLiveTokenStream(accumulatedText, tokensPerSec) {
     return;
   }
 
-  setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, energy);
+  const label = currentAppMode === "voice" ? "Wisp đang nói…" : STATE_DESCRIPTIONS.composing;
+  setOrbVisualState("composing", label, energy);
 }
 
 /**
@@ -855,21 +1250,21 @@ async function streamBotMessage(fullText, existingBubble = null) {
   for (let i = 0; i < tokens.length; i += step) {
     current += tokens.slice(i, i + step).join("");
     bubble.innerHTML = formatSafeMessageHtml(current);
+    if (currentAppMode === "voice") {
+      setVoiceSubtitle(current, false);
+    }
     scrollToBottom();
     await delay(16);
   }
   bubble.innerHTML = formatSafeMessageHtml(fullText);
+  if (currentAppMode === "voice") {
+    setVoiceSubtitle(fullText, false);
+  }
   scrollToBottom();
 }
 
 /**
- * Gửi tin nhắn và đọc luồng sự kiện NDJSON thời gian thực từ `/api/chat/stream`.
- * Quả cầu tự động chuyển trạng thái theo đúng bước thực thi thật của Backend & GPU:
- * - Backend nạp lịch sử -> `connecting`
- * - Backend gọi Open-Meteo API -> `searching`
- * - Backend ghép dữ liệu công cụ vào ngữ cảnh LLM -> `weaving`
- * - Ollama nạp prompt lên GPU và suy luận -> `solving`
- * - Từng token trả về -> `composing` / `working` (khi gõ code) / `weaving` (khi lập danh sách)
+ * Gửi tin nhắn (từ ô chat hoặc từ giọng nói) và đọc luồng sự kiện NDJSON thời gian thực từ `/api/chat/stream`.
  */
 async function sendMessage(presetText) {
   if (isSending) return;
@@ -877,15 +1272,22 @@ async function sendMessage(presetText) {
   const rawText = typeof presetText === "string" ? presetText : (msgInput ? msgInput.value : "");
   const message = rawText.trim();
   if (!message) {
-    if (msgInput) msgInput.focus();
+    if (currentAppMode === "chat" && msgInput) msgInput.focus();
     return;
   }
 
   clearTimeout(typingIdleTimer);
   clearTimeout(typingShapeTimer);
   clearTimeout(previewResetTimer);
+  stopVoiceListening();
+  stopSpeaking();
+  ttsSpokenCharIndex = 0;
 
   appendUserMessage(message);
+  if (currentAppMode === "voice") {
+    setVoiceSubtitle(`“${message}”`, false);
+  }
+
   if (typeof presetText !== "string" && msgInput) {
     msgInput.value = "";
   } else if (msgInput && msgInput.value.trim() === message) {
@@ -951,13 +1353,11 @@ async function sendMessage(presetText) {
         }
 
         if (evt.type === "state" && evt.state) {
-          // Nếu belum có token nào được in ra, giữ nhịp chuyển trạng thái mượt để mắt người nhìn rõ pha xử lý
           const holdMs = streamedTokenCount === 0 ? 320 : 0;
           await transitionOrbWithMinVisibility(evt.state, evt.label, holdMs);
         } else if (evt.type === "token" && typeof evt.delta === "string") {
           if (!firstTokenMs) {
             firstTokenMs = performance.now();
-            // Nếu pha suy nghĩ trước đó vừa mới bật quá nhanh (fast-path), chờ nhẹ để người dùng thấy rõ pha xử lý
             const sinceLastState = firstTokenMs - lastStateSwitchMs;
             if (sinceLastState < 420 && streamedTokenCount === 0) {
               await delay(420 - sinceLastState);
@@ -967,7 +1367,6 @@ async function sendMessage(presetText) {
           streamedTokenCount += 1;
           accumulatedText += evt.delta;
 
-          // Nếu chỉ có 1 cục văn bản lớn trả về ngay (Fast-path), chạy hiệu ứng gõ chữ mượt
           if (streamedTokenCount === 1 && evt.delta.length > 28) {
             pendingStateText = evt.delta;
           } else {
@@ -980,6 +1379,10 @@ async function sendMessage(presetText) {
               botBubbleObj.bubble.innerHTML = formatSafeMessageHtml(accumulatedText);
               scrollToBottom();
             }
+            if (currentAppMode === "voice") {
+              setVoiceSubtitle(accumulatedText, false);
+              feedStreamingTextToTTS(accumulatedText, false);
+            }
             const elapsedSec = Math.max(0.1, (performance.now() - firstTokenMs) / 1000);
             const tokPerSec = streamedTokenCount / elapsedSec;
             adaptOrbToLiveTokenStream(accumulatedText, tokPerSec);
@@ -988,15 +1391,19 @@ async function sendMessage(presetText) {
       }
     }
 
-    // Nếu là câu trả lời Fast-path (1 chunk duy nhất), hiển thị bằng hiệu ứng typewriter mượt
     if (pendingStateText !== null) {
-      setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, 1.1);
+      const label = currentAppMode === "voice" ? "Wisp đang nói…" : STATE_DESCRIPTIONS.composing;
+      setOrbVisualState("composing", label, 1.15);
+      if (currentAppMode === "voice") {
+        feedStreamingTextToTTS(pendingStateText, true);
+      }
       await streamBotMessage(pendingStateText);
     } else if (!accumulatedText.trim()) {
       await streamBotMessage(FALLBACK_ERROR);
+    } else if (currentAppMode === "voice") {
+      feedStreamingTextToTTS(accumulatedText, true);
     }
   } catch (_err) {
-    // Fallback an toàn về /api/chat nếu trình duyệt không hỗ trợ ReadableStream
     try {
       setOrbVisualState("connecting", STATE_DESCRIPTIONS.connecting, 1);
       const res = await fetch("/api/chat", {
@@ -1007,33 +1414,45 @@ async function sendMessage(presetText) {
       const data = res.ok ? await res.json() : null;
       const reply = data && typeof data.reply === "string" && data.reply.trim() ? data.reply : FALLBACK_ERROR;
       setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, 1.05);
+      if (currentAppMode === "voice") {
+        feedStreamingTextToTTS(reply, true);
+      }
       await streamBotMessage(reply);
     } catch (_fallbackErr) {
       await streamBotMessage(FALLBACK_ERROR);
     }
   }
 
-  // Hoàn tất phản hồi -> dịu mượt về trạng thái Idle (breathing)
-  await delay(220);
+  // Nếu đang ở Chế độ Nói, chờ Wisp đọc xong câu trả lời rồi tự động bật lại Mic lắng nghe câu tiếp theo
+  if (currentAppMode === "voice") {
+    await waitForSpeechToFinish();
+  } else {
+    await delay(220);
+  }
+
   isSending = false;
   if (sendBtn) sendBtn.disabled = false;
   if (msgInput) {
     msgInput.disabled = false;
-    msgInput.focus();
+    if (currentAppMode === "chat") {
+      msgInput.focus();
+    }
   }
+
   syncIdleState();
+  if (currentAppMode === "voice" && !voiceMicMuted) {
+    setTimeout(() => {
+      startVoiceListening();
+    }, 300);
+  }
 }
 
 /**
- * Phản ứng thông minh theo động lực gõ phím thời gian thực của người dùng:
- * - Gõ liên tục: `listening` (wave) với tốc độ sóng tỉ lệ thuận với tốc độ gõ (keys/sec).
- * - Xóa sửa nhiều ký tự liên tiếp (Backspace/Delete): chuyển sang `shaping` (morph: đang cấu trúc lại ý).
- * - Đang gõ dở câu mà dừng lại ngẫm nghĩ (> 900ms): chuyển nhẹ sang `shaping` (morph: chờ bạn định hình ý),
- *   sau đó nếu nghỉ hẳn (> 2800ms) mới dịu về `breathing`.
+ * Phản ứng thông minh theo động lực gõ phím thời gian thực của người dùng ở Chế độ Chat:
  */
 if (msgInput) {
   msgInput.addEventListener("input", () => {
-    if (isSending) return;
+    if (isSending || currentAppMode !== "chat") return;
     clearTimeout(typingIdleTimer);
     clearTimeout(typingShapeTimer);
     clearTimeout(previewResetTimer);
@@ -1049,7 +1468,6 @@ if (msgInput) {
       return;
     }
 
-    // Tính tốc độ gõ phím trong cửa sổ 1.2 giây gần nhất
     keystrokeTimes.push(now);
     while (keystrokeTimes.length > 0 && now - keystrokeTimes[0] > 1200) {
       keystrokeTimes.shift();
@@ -1057,7 +1475,6 @@ if (msgInput) {
     const keysPerSec = keystrokeTimes.length / 1.2;
     const waveEnergy = Math.max(0.88, Math.min(1.55, 0.85 + keysPerSec * 0.085));
 
-    // Phát hiện hành vi xóa/viết lại câu hỏi
     if (val.length < prevInputLength) {
       consecutiveDeletes += prevInputLength - val.length;
     } else {
@@ -1071,17 +1488,16 @@ if (msgInput) {
       setOrbVisualState("listening", STATE_DESCRIPTIONS.listening, waveEnergy);
     }
 
-    // Nếu người dùng đang gõ dở câu dài và tạm dừng suy nghĩ -> chuyển sang `shaping`
     if (trimmedLen >= 6) {
       typingShapeTimer = setTimeout(() => {
-        if (!isSending && msgInput.value.trim().length >= 6) {
+        if (!isSending && currentAppMode === "chat" && msgInput.value.trim().length >= 6) {
           setOrbVisualState("shaping", STATE_DESCRIPTIONS.shaping, 0.92);
         }
       }, 950);
     }
 
     typingIdleTimer = setTimeout(() => {
-      if (!isSending) {
+      if (!isSending && currentAppMode === "chat") {
         syncIdleState();
       }
     }, 2800);
@@ -1095,17 +1511,73 @@ if (msgInput) {
   });
 }
 
-// Bấm trực tiếp vào quả cầu để xem thử hình thái tiếp theo (tự quay về Idle sau 4 giây)
+// Sự kiện chuyển đổi giữa Chế độ Chat & Chế độ Nói
+if (modeChatBtn) {
+  modeChatBtn.addEventListener("click", () => switchAppMode("chat"));
+}
+if (modeVoiceBtn) {
+  modeVoiceBtn.addEventListener("click", () => switchAppMode("voice"));
+}
+if (quickVoiceBtn) {
+  quickVoiceBtn.addEventListener("click", () => switchAppMode("voice"));
+}
+if (voiceExitBtn) {
+  voiceExitBtn.addEventListener("click", () => switchAppMode("chat"));
+}
+
+// Nút Bật / Tạm dừng Mic trong Chế độ Nói
+if (voiceMicToggleBtn) {
+  voiceMicToggleBtn.addEventListener("click", () => {
+    if (currentAppMode !== "voice") return;
+    if (isSpeakingTTS) {
+      stopSpeaking();
+    }
+    voiceMicMuted = !voiceMicMuted;
+    updateMicButtonUI();
+    if (voiceMicMuted) {
+      stopVoiceListening();
+      syncIdleState();
+    } else {
+      setVoiceSubtitle("Hãy nói gì đó với Wisp…", true);
+      syncIdleState();
+      startVoiceListening();
+    }
+  });
+}
+
+// Nút Ngắt lời Wisp khi Wisp đang đọc câu trả lời
+if (voiceInterruptBtn) {
+  voiceInterruptBtn.addEventListener("click", () => {
+    stopSpeaking();
+    if (currentAppMode === "voice" && !voiceMicMuted) {
+      setVoiceSubtitle("Đã ngắt lời — bạn hãy nói tiếp…", true);
+      setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.1);
+      startVoiceListening();
+    }
+  });
+}
+
+// Bấm trực tiếp vào quả cầu để xem thử hình thái tiếp theo (khi ở Chế độ Chat)
 if (orbModeBtn) {
   orbModeBtn.addEventListener("click", () => {
     if (isSending) return;
+    if (currentAppMode === "voice") {
+      // Trong Chế độ Nói, bấm vào quả cầu khi Wisp đang nói sẽ ngắt lời để bạn nói luôn
+      if (isSpeakingTTS) {
+        stopSpeaking();
+        setVoiceSubtitle("Đã ngắt lời — bạn hãy nói tiếp…", true);
+        setOrbVisualState("listening", "Đang lắng nghe bạn nói…", 1.1);
+        startVoiceListening();
+      }
+      return;
+    }
     clearTimeout(previewResetTimer);
     const cur = centerOrb ? centerOrb.getState() : "breathing";
     const idx = (ALL_STATES.indexOf(cur) + 1) % ALL_STATES.length;
     const next = ALL_STATES[idx];
     setOrbVisualState(next, `${STATE_DESCRIPTIONS[next]}`, 1);
     previewResetTimer = setTimeout(() => {
-      if (!isSending) syncIdleState();
+      if (!isSending && currentAppMode === "chat") syncIdleState();
     }, 4000);
   });
 }
@@ -1135,3 +1607,4 @@ if (sendBtn) {
 }
 
 window.sendMessage = sendMessage;
+window.switchAppMode = switchAppMode;

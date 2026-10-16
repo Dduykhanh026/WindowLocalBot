@@ -63,6 +63,54 @@ body {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
+/* Thanh chuyển đổi 2 chế độ: Chế độ Chat | Chế độ Nói */
+.mode-switcher {
+  position: fixed;
+  top: 18px;
+  left: 22px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.35);
+}
+
+.mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.mode-tab svg {
+  width: 15px;
+  height: 15px;
+}
+
+.mode-tab:hover:not(.active) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.mode-tab.active {
+  color: var(--accent-fg);
+  background: var(--accent-bg);
+  font-weight: 600;
+}
+
 /* Nút đổi Sáng/Tối ở góc phải trên */
 .theme-corner-btn {
   position: fixed;
@@ -103,15 +151,16 @@ html[data-theme="light"] .icon-sun {
   display: none;
 }
 
-/* Bố cục chia 2 cột toàn màn hình */
+/* Bố cục chia 2 cột toàn màn hình (Chế độ Chat) & Toàn màn hình (Chế độ Nói) */
 .split-layout {
   display: flex;
   width: 100vw;
   height: 100vh;
   height: 100dvh;
+  overflow: hidden;
 }
 
-/* CỘT TRÁI: Sân khấu Thinking Orb của Wisp (50% màn hình) */
+/* CỘT TRÁI: Sân khấu Thinking Orb của Wisp (50% ở Chat, 100% ở Voice) */
 .orb-pane {
   flex: 1 1 50%;
   width: 50%;
@@ -122,7 +171,17 @@ html[data-theme="light"] .icon-sun {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  transition:
+    flex-basis 0.42s cubic-bezier(0.16, 1, 0.3, 1),
+    width 0.42s cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.split-layout[data-mode="voice"] .orb-pane {
+  flex: 1 1 100%;
+  width: 100%;
+  border-right-color: transparent;
 }
 
 .orb-stage {
@@ -132,6 +191,7 @@ html[data-theme="light"] .icon-sun {
   justify-content: center;
   user-select: none;
   width: 100%;
+  max-width: 720px;
 }
 
 .orb-canvas-wrap {
@@ -140,12 +200,17 @@ html[data-theme="light"] .icon-sun {
   justify-content: center;
   width: 480px;
   height: 480px;
-  max-width: min(480px, 44vw, 64vh);
-  max-height: min(480px, 44vw, 64vh);
+  max-width: min(480px, 44vw, 56vh);
+  max-height: min(480px, 44vw, 56vh);
   border-radius: 50%;
   background: var(--orb-glow);
   cursor: pointer;
-  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), max-width 0.35s ease, max-height 0.35s ease;
+}
+
+.split-layout[data-mode="voice"] .orb-canvas-wrap {
+  max-width: min(480px, 78vw, 52vh);
+  max-height: min(480px, 78vw, 52vh);
 }
 
 .orb-canvas-wrap canvas {
@@ -190,42 +255,136 @@ html[data-theme="light"] .icon-sun {
   opacity: 0.88;
 }
 
-/* Thanh chọn 9 trạng thái chuẩn của thinking-orbs */
-.orb-state-switcher {
+/* Khu vực Phụ đề trực tiếp & Điều khiển Chế độ Nói */
+.voice-overlay {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  margin-top: 18px;
+  animation: fadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.split-layout[data-mode="voice"] .voice-overlay {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 16px;
-  max-width: 480px;
 }
 
-.state-pill {
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: transparent;
-  border: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.state-pill:hover {
+.voice-transcript {
+  min-height: 52px;
+  max-width: 600px;
+  padding: 0 20px;
+  text-align: center;
+  font-size: 16.5px;
+  line-height: 1.55;
   color: var(--text-primary);
-  border-color: var(--border-strong);
+  opacity: 0.9;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.voice-transcript.muted {
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.voice-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 22px;
+}
+
+.voice-ctrl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
   background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.state-pill.active {
-  color: var(--accent-fg);
+.voice-ctrl-btn[hidden] {
+  display: none !important;
+}
+
+.voice-ctrl-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+.voice-ctrl-btn:hover {
+  transform: scale(1.06);
+  background: var(--bg-hover);
+}
+
+.voice-ctrl-btn.mic-active {
   background: var(--accent-bg);
+  color: var(--accent-fg);
   border-color: var(--accent-bg);
+  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.08);
+  animation: micPulse 2s infinite ease-in-out;
 }
 
-/* CỘT PHẢI: Khung hiển thị chat & ô nhập chat (50% màn hình) */
+html[data-theme="light"] .voice-ctrl-btn.mic-active {
+  box-shadow: 0 0 0 6px rgba(15, 23, 42, 0.08);
+}
+
+.voice-ctrl-btn.mic-active .icon-mic-off {
+  display: none;
+}
+
+.voice-ctrl-btn:not(.mic-active) .icon-mic-on {
+  display: none;
+}
+
+.voice-ctrl-btn.mic-muted {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.voice-ctrl-btn.voice-stop-speaking {
+  width: auto;
+  height: 46px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+}
+
+.voice-ctrl-btn.voice-stop-speaking svg {
+  width: 15px;
+  height: 15px;
+}
+
+.voice-ctrl-btn.voice-exit {
+  width: 46px;
+  height: 46px;
+  color: var(--text-secondary);
+}
+
+@keyframes micPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.06);
+  }
+  50% {
+    box-shadow: 0 0 0 11px rgba(255, 255, 255, 0.13);
+  }
+}
+
+/* CỘT PHẢI: Khung hiển thị chat & ô nhập chat (50% ở Chat, ẩn mượt ở Voice) */
 .chat-pane {
   flex: 1 1 50%;
   width: 50%;
@@ -234,6 +393,19 @@ html[data-theme="light"] .icon-sun {
   display: flex;
   flex-direction: column;
   background-color: var(--bg-page);
+  opacity: 1;
+  transition:
+    flex-basis 0.42s cubic-bezier(0.16, 1, 0.3, 1),
+    width 0.42s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.25s ease;
+}
+
+.split-layout[data-mode="voice"] .chat-pane {
+  flex: 0 0 0%;
+  width: 0%;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 .chat-messages {
@@ -370,6 +542,32 @@ html[data-theme="light"] .icon-sun {
   cursor: not-allowed;
 }
 
+.voice-quick-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.voice-quick-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.voice-quick-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+}
+
 .send-btn {
   display: inline-flex;
   align-items: center;
@@ -426,9 +624,14 @@ html[data-theme="light"] .icon-sun {
     min-width: 0;
     max-width: none;
     height: auto;
-    padding: 16px 12px 12px;
+    padding: 58px 12px 12px;
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .split-layout[data-mode="voice"] .orb-pane {
+    height: 100%;
+    border-bottom: none;
   }
 
   .orb-canvas-wrap {
@@ -436,9 +639,19 @@ html[data-theme="light"] .icon-sun {
     height: 180px;
   }
 
+  .split-layout[data-mode="voice"] .orb-canvas-wrap {
+    width: 300px;
+    height: 300px;
+  }
+
   .orb-canvas-wrap canvas {
     width: 170px !important;
     height: 170px !important;
+  }
+
+  .split-layout[data-mode="voice"] .orb-canvas-wrap canvas {
+    width: 300px !important;
+    height: 300px !important;
   }
 
   .chat-messages {

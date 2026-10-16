@@ -16,6 +16,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
 @app.route("/", methods=["GET"])

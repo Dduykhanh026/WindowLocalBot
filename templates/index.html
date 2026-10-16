@@ -7,6 +7,24 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+  <!-- Thanh chuyển đổi 2 chế độ: Chế độ Chat | Chế độ Nói -->
+  <nav class="mode-switcher" aria-label="Chế độ tương tác">
+    <button type="button" id="modeChatBtn" class="mode-tab active" data-mode="chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+      </svg>
+      <span>Chế độ Chat</span>
+    </button>
+    <button type="button" id="modeVoiceBtn" class="mode-tab" data-mode="voice">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+        <line x1="12" x2="12" y1="19" y2="22"></line>
+      </svg>
+      <span>Chế độ Nói</span>
+    </button>
+  </nav>
+
   <button type="button" id="themeToggleBtn" class="theme-corner-btn" title="Đổi giao diện Sáng / Tối" aria-label="Đổi giao diện Sáng / Tối">
     <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="4"></circle>
@@ -17,8 +35,8 @@
     </svg>
   </button>
 
-  <div class="split-layout">
-    <!-- CỘT TRÁI: THINKING ORB CỦA WISP -->
+  <div class="split-layout" id="appLayout" data-mode="chat">
+    <!-- CỘT TRÁI (HOẶC TOÀN MÀN HÌNH KHI Ở CHẾ ĐỘ NÓI): THINKING ORB CỦA WISP -->
     <aside class="orb-pane">
       <section class="orb-stage">
         <div class="orb-canvas-wrap" id="orbModeBtn" title="Bấm để đổi trạng thái của Wisp">
@@ -29,6 +47,43 @@
 
         <div id="typingIndicator" class="orb-status" aria-live="polite">
           <span id="typingText" class="orb-status-text visible">Sẵn sàng</span>
+        </div>
+
+        <!-- Phụ đề trực tiếp & Bộ điều khiển giọng nói (hiển thị trong Chế độ Nói) -->
+        <div class="voice-overlay" id="voiceOverlay" aria-live="polite">
+          <p id="voiceTranscript" class="voice-transcript">Hãy nói gì đó với Wisp…</p>
+
+          <div class="voice-controls">
+            <button type="button" id="voiceMicToggleBtn" class="voice-ctrl-btn mic-active" title="Bật / Tạm dừng Mic" aria-label="Bật hoặc tạm dừng Mic">
+              <svg class="icon-mic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" x2="12" y1="19" y2="22"></line>
+              </svg>
+              <svg class="icon-mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="2" x2="22" y1="2" y2="22"></line>
+                <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"></path>
+                <path d="M5 10v2a7 7 0 0 0 12 5"></path>
+                <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"></path>
+                <path d="M9 9v3a3 3 0 0 0 5.12 2.12"></path>
+                <line x1="12" x2="12" y1="19" y2="22"></line>
+              </svg>
+            </button>
+
+            <button type="button" id="voiceInterruptBtn" class="voice-ctrl-btn voice-stop-speaking" title="Ngắt lời Wisp để nói tiếp" aria-label="Ngắt lời Wisp" hidden>
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2.5"></rect>
+              </svg>
+              <span>Ngắt lời</span>
+            </button>
+
+            <button type="button" id="voiceExitBtn" class="voice-ctrl-btn voice-exit" title="Quay về Chế độ Chat" aria-label="Quay về Chế độ Chat">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 6 6 18"></path>
+                <path d="m6 6 12 12"></path>
+              </svg>
+            </button>
+          </div>
         </div>
       </section>
     </aside>
@@ -47,6 +102,16 @@
             autocomplete="off"
             autofocus
           >
+          <button type="button" id="quickVoiceBtn" class="voice-quick-btn" title="Chuyển sang Chế độ Nói" aria-label="Chuyển sang Chế độ Nói">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 10v3"></path>
+              <path d="M6 6v11"></path>
+              <path d="M10 3v18"></path>
+              <path d="M14 8v7"></path>
+              <path d="M18 5v13"></path>
+              <path d="M22 10v3"></path>
+            </svg>
+          </button>
           <button type="button" id="sendBtn" class="send-btn" aria-label="Gửi">
             <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 19V5"></path>
