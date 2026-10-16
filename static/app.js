@@ -679,15 +679,15 @@ function mountThinkingOrb(canvas, initialState = "breathing", displaySize = 128)
 }
 
 /* ==========================================================================
-   PHẦN 2: VÒNG ĐỜI TRẠNG THÁI AI (AUTO AI LIFECYCLE + MANUAL SWITCHER)
+   PHẦN 2: VÒNG ĐỜI TRẠNG THÁI AI TỰ NHIÊN & HIỆU ỨNG STREAMING ĐỒNG BỘ
    ========================================================================== */
 
 const FALLBACK_ERROR = "⚠️ Có lỗi gì đó, thử lại nhé.";
 const ALL_STATES = [
   "breathing",
   "listening",
-  "working",
   "searching",
+  "working",
   "solving",
   "connecting",
   "weaving",
@@ -696,15 +696,15 @@ const ALL_STATES = [
 ];
 
 const STATE_DESCRIPTIONS = {
-  breathing: "breathing • Wisp sẵn sàng",
-  listening: "listening • Wisp đang lắng nghe…",
-  working: "working • Wisp đang xử lý…",
-  searching: "searching • Wisp đang tra cứu thời tiết…",
-  solving: "solving • Wisp đang phân tích…",
-  connecting: "connecting • Wisp đang kết nối…",
-  weaving: "weaving • Wisp đang tổng hợp…",
-  composing: "composing • Wisp đang phản hồi…",
-  shaping: "shaping • Wisp đang định hình…",
+  breathing: "Sẵn sàng",
+  listening: "Đang lắng nghe…",
+  working: "Đang tra cứu giờ…",
+  searching: "Đang quét dữ liệu thời tiết…",
+  solving: "Đang suy luận & xử lý logic…",
+  connecting: "Đang kết nối tri thức…",
+  weaving: "Đang biên soạn nội dung…",
+  composing: "Đang phản hồi…",
+  shaping: "Đang khởi tạo…",
 };
 
 const chatEl = document.getElementById("chat");
@@ -713,13 +713,11 @@ const sendBtn = document.getElementById("sendBtn");
 const typingText = document.getElementById("typingText");
 const centerOrbCanvas = document.getElementById("centerOrb");
 const orbModeBtn = document.getElementById("orbModeBtn");
-const orbStateSwitcher = document.getElementById("orbStateSwitcher");
 const themeToggleBtn = document.getElementById("themeToggleBtn");
 
 let isSending = false;
-let pinnedMode = "auto"; // "auto" hoặc tên 1 trong 9 state
 let typingIdleTimer = 0;
-let composingTimer = 0;
+let previewResetTimer = 0;
 
 const centerOrb = mountThinkingOrb(centerOrbCanvas, "breathing", 460);
 
@@ -727,24 +725,13 @@ function setOrbVisualState(state, customCaption) {
   if (!centerOrb) return;
   centerOrb.setState(state);
   if (typingText) {
-    typingText.textContent = customCaption || STATE_DESCRIPTIONS[state] || state;
+    typingText.textContent = customCaption || STATE_DESCRIPTIONS[state] || "";
     typingText.classList.add("visible");
   }
 }
 
-function updateActivePillUI(selected) {
-  if (!orbStateSwitcher) return;
-  orbStateSwitcher.querySelectorAll(".state-pill").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-state") === selected);
-  });
-}
-
-function syncIdleOrPinnedState() {
-  if (pinnedMode !== "auto") {
-    setOrbVisualState(pinnedMode, `${pinnedMode} (${STATE_TO_MODE[pinnedMode]})`);
-  } else {
-    setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing);
-  }
+function syncIdleState() {
+  setOrbVisualState("breathing", STATE_DESCRIPTIONS.breathing);
 }
 
 /**
@@ -766,34 +753,78 @@ function scrollToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
+/**
+ * Phân tích câu hỏi để chọn đúng trạng thái ngữ nghĩa trong 9 trạng thái của thinking-orbs:
+ * - Thời tiết / địa lý -> searching (globe: địa cầu quét kinh tuyến)
+ * - Giờ giấc / ngày tháng -> working (orbits: quỹ đạo đồng hồ)
+ * - Code / tính toán / kỹ thuật -> solving (rubik: khối cầu giải thuật)
+ * - Viết lách / kể chuyện / dịch / tóm tắt -> weaving (braid: đan dệt ý tưởng)
+ * - Xóa lịch sử / cấu hình -> shaping (morph: biến hình)
+ * - Hỏi đáp / trò chuyện tự nhiên -> connecting (web: mạng lưới nơ-ron)
+ */
 function pickThinkingStateForQuery(query) {
   const q = query.toLowerCase();
-  if (q.includes("thời tiết") || q.includes("thoi tiet") || q.includes("weather") || q.includes("nhiệt độ")) {
-    return { state: "searching", label: "searching • Wisp đang tra cứu thời tiết…" };
+  if (
+    q.includes("thời tiết") ||
+    q.includes("thoi tiet") ||
+    q.includes("weather") ||
+    q.includes("nhiệt độ") ||
+    q.includes("mưa") ||
+    q.includes("nắng")
+  ) {
+    return { state: "searching", label: STATE_DESCRIPTIONS.searching };
   }
-  if (q.includes("giờ") || q.includes("gio") || q.includes("hôm nay") || q.includes("hom nay") || q.includes("ngày")) {
-    return { state: "working", label: "working • Wisp đang xem giờ…" };
+  if (
+    q.includes("mấy giờ") ||
+    q.includes("may gio") ||
+    q.includes("giờ ở") ||
+    q.includes("gio o") ||
+    q.includes("hôm nay") ||
+    q.includes("hom nay") ||
+    q.includes("ngày mấy") ||
+    q === "giờ" ||
+    q === "gio"
+  ) {
+    return { state: "working", label: STATE_DESCRIPTIONS.working };
   }
-  if (q.includes("help") || q.includes("trợ giúp")) {
-    return { state: "connecting", label: "connecting • Wisp đang trả lời…" };
+  if (
+    q.includes("code") ||
+    q.includes("viết hàm") ||
+    q.includes("swift") ||
+    q.includes("flutter") ||
+    q.includes("dart") ||
+    q.includes("python") ||
+    q.includes("js") ||
+    q.includes("lỗi") ||
+    q.includes("bug") ||
+    q.includes("tính") ||
+    q.includes("thuật toán")
+  ) {
+    return { state: "solving", label: STATE_DESCRIPTIONS.solving };
   }
-  return { state: "solving", label: "solving • Wisp đang suy nghĩ…" };
+  if (
+    q.includes("kể") ||
+    q.includes("viết") ||
+    q.includes("thơ") ||
+    q.includes("dịch") ||
+    q.includes("tóm tắt") ||
+    q.includes("giải thích")
+  ) {
+    return { state: "weaving", label: STATE_DESCRIPTIONS.weaving };
+  }
+  if (q.includes("xóa lịch sử") || q === "clear" || q === "reset") {
+    return { state: "shaping", label: STATE_DESCRIPTIONS.shaping };
+  }
+  return { state: "connecting", label: STATE_DESCRIPTIONS.connecting };
 }
 
-function appendMessage(text, sender) {
+function appendUserMessage(text) {
   if (!chatEl) return;
-
   const row = document.createElement("div");
-  row.className = `message-row ${sender === "user" ? "user-row" : "bot-row"}`;
-
+  row.className = "message-row user-row";
   const bubble = document.createElement("div");
-  bubble.className = `message ${sender === "user" ? "user-message" : "bot-message"}`;
-  if (sender === "bot") {
-    bubble.innerHTML = formatSafeMessageHtml(text);
-  } else {
-    bubble.textContent = text;
-  }
-
+  bubble.className = "message user-message";
+  bubble.textContent = text;
   row.appendChild(bubble);
   chatEl.appendChild(row);
   scrollToBottom();
@@ -801,6 +832,32 @@ function appendMessage(text, sender) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Hiệu ứng gõ chữ mượt (streaming typewriter) đồng bộ với trạng thái "composing" của Orb.
+ */
+async function streamBotMessage(fullText) {
+  if (!chatEl) return;
+  const row = document.createElement("div");
+  row.className = "message-row bot-row";
+  const bubble = document.createElement("div");
+  bubble.className = "message bot-message";
+  row.appendChild(bubble);
+  chatEl.appendChild(row);
+
+  const tokens = fullText.split(/(\s+)/);
+  let current = "";
+  const step = Math.max(1, Math.ceil(tokens.length / 28));
+
+  for (let i = 0; i < tokens.length; i += step) {
+    current += tokens.slice(i, i + step).join("");
+    bubble.innerHTML = formatSafeMessageHtml(current);
+    scrollToBottom();
+    await delay(18);
+  }
+  bubble.innerHTML = formatSafeMessageHtml(fullText);
+  scrollToBottom();
 }
 
 async function sendMessage(presetText) {
@@ -814,9 +871,9 @@ async function sendMessage(presetText) {
   }
 
   clearTimeout(typingIdleTimer);
-  clearTimeout(composingTimer);
+  clearTimeout(previewResetTimer);
 
-  appendMessage(message, "user");
+  appendUserMessage(message);
   if (typeof presetText !== "string" && msgInput) {
     msgInput.value = "";
   } else if (msgInput && msgInput.value.trim() === message) {
@@ -827,7 +884,7 @@ async function sendMessage(presetText) {
   if (sendBtn) sendBtn.disabled = true;
   if (msgInput) msgInput.disabled = true;
 
-  // Bước 1: Chuyển sang trạng thái Thinking theo ngữ cảnh câu hỏi
+  // Bước 1: Chuyển sang trạng thái Thinking phù hợp với câu hỏi
   const { state: thinkingState, label: thinkingLabel } = pickThinkingStateForQuery(message);
   setOrbVisualState(thinkingState, thinkingLabel);
 
@@ -853,45 +910,42 @@ async function sendMessage(presetText) {
     replyText = FALLBACK_ERROR;
   }
 
-  // Đảm bảo hiệu ứng Thinking hiển thị tối thiểu 650ms để mắt người nhìn rõ chuyển động Orb
+  // Đảm bảo hiệu ứng Thinking hiển thị tối thiểu 600ms để mắt người cảm nhận rõ
   const elapsed = performance.now() - startMs;
-  if (elapsed < 650) {
-    await delay(650 - elapsed);
+  if (elapsed < 600) {
+    await delay(600 - elapsed);
   }
 
-  // Bước 2: Chuyển sang trạng thái Composing khi hiển thị câu trả lời
+  // Bước 2: Chuyển sang trạng thái Composing (ribbon) đồng bộ lúc Wisp đang gõ câu trả lời
   setOrbVisualState("composing", STATE_DESCRIPTIONS.composing);
-  appendMessage(replyText, "bot");
+  await streamBotMessage(replyText);
 
+  // Bước 3: Trả lời xong -> dịu mượt về trạng thái Idle (breathing)
+  await delay(250);
   isSending = false;
   if (sendBtn) sendBtn.disabled = false;
   if (msgInput) {
     msgInput.disabled = false;
     msgInput.focus();
   }
-
-  // Bước 3: Sau 950ms tự động dịu về trạng thái Idle (breathing) hoặc trạng thái user đã ghim
-  composingTimer = setTimeout(() => {
-    if (!isSending) {
-      syncIdleOrPinnedState();
-    }
-  }, 950);
+  syncIdleState();
 }
 
-// Khi user gõ phím trong ô input -> ở chế độ Auto AI sẽ chuyển Orb sang "listening" (wave)
+// Khi user gõ phím -> chuyển Orb sang "listening" (wave)
 if (msgInput) {
   msgInput.addEventListener("input", () => {
-    if (isSending || pinnedMode !== "auto") return;
+    if (isSending) return;
     clearTimeout(typingIdleTimer);
+    clearTimeout(previewResetTimer);
     if (msgInput.value.trim().length > 0) {
       setOrbVisualState("listening", STATE_DESCRIPTIONS.listening);
       typingIdleTimer = setTimeout(() => {
-        if (!isSending && pinnedMode === "auto") {
-          syncIdleOrPinnedState();
+        if (!isSending) {
+          syncIdleState();
         }
       }, 1800);
     } else {
-      syncIdleOrPinnedState();
+      syncIdleState();
     }
   });
 
@@ -903,27 +957,18 @@ if (msgInput) {
   });
 }
 
-// Chọn trạng thái trên thanh pill switcher
-if (orbStateSwitcher) {
-  orbStateSwitcher.addEventListener("click", (e) => {
-    const pill = e.target.closest(".state-pill");
-    if (!pill) return;
-    const chosen = pill.getAttribute("data-state") || "auto";
-    pinnedMode = chosen;
-    updateActivePillUI(chosen);
-    syncIdleOrPinnedState();
-  });
-}
-
-// Bấm trực tiếp vào quả cầu để xoay vòng qua các trạng thái
+// Bấm trực tiếp vào quả cầu để xem thử hình thái tiếp theo (tự quay về Idle sau 4 giây)
 if (orbModeBtn) {
   orbModeBtn.addEventListener("click", () => {
+    if (isSending) return;
+    clearTimeout(previewResetTimer);
     const cur = centerOrb ? centerOrb.getState() : "breathing";
     const idx = (ALL_STATES.indexOf(cur) + 1) % ALL_STATES.length;
     const next = ALL_STATES[idx];
-    pinnedMode = next;
-    updateActivePillUI(next);
-    syncIdleOrPinnedState();
+    setOrbVisualState(next, `${STATE_DESCRIPTIONS[next]}`);
+    previewResetTimer = setTimeout(() => {
+      if (!isSending) syncIdleState();
+    }, 4000);
   });
 }
 
@@ -935,7 +980,7 @@ if (themeToggleBtn) {
   });
 }
 
-// Bấm vào các thẻ `code` trong lời chào / help để gửi lệnh ngay
+// Bấm vào các thẻ `code` để gửi lệnh ngay
 if (chatEl) {
   chatEl.addEventListener("click", (e) => {
     const codeEl = e.target.closest(".inline-code");
