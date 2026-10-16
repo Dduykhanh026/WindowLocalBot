@@ -721,7 +721,7 @@ let pinnedMode = "auto"; // "auto" hoặc tên 1 trong 9 state
 let typingIdleTimer = 0;
 let composingTimer = 0;
 
-const centerOrb = mountThinkingOrb(centerOrbCanvas, "breathing", 128);
+const centerOrb = mountThinkingOrb(centerOrbCanvas, "breathing", 220);
 
 function setOrbVisualState(state, customCaption) {
   if (!centerOrb) return;
