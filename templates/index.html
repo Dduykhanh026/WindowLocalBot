@@ -17,52 +17,58 @@
     </svg>
   </button>
 
-  <div class="chat-container">
-    <section class="orb-stage">
-      <div class="orb-canvas-wrap" id="orbModeBtn" title="Bấm để đổi trạng thái của Wisp">
-        <canvas id="centerOrb" width="320" height="320" aria-label="Wisp Thinking Orb"></canvas>
-      </div>
+  <div class="split-layout">
+    <!-- CỘT TRÁI: THINKING ORB CỦA WISP -->
+    <aside class="orb-pane">
+      <section class="orb-stage">
+        <div class="orb-canvas-wrap" id="orbModeBtn" title="Bấm để đổi trạng thái của Wisp">
+          <canvas id="centerOrb" width="460" height="460" aria-label="Wisp Thinking Orb"></canvas>
+        </div>
 
-      <div class="wisp-title">Wisp</div>
+        <div class="wisp-title">Wisp</div>
 
-      <div id="typingIndicator" class="orb-status" aria-live="polite">
-        <span id="typingText" class="orb-status-text visible">breathing • Sẵn sàng</span>
-      </div>
+        <div id="typingIndicator" class="orb-status" aria-live="polite">
+          <span id="typingText" class="orb-status-text visible">breathing • Wisp sẵn sàng</span>
+        </div>
 
-      <div class="orb-state-switcher" id="orbStateSwitcher" role="tablist" aria-label="Trạng thái Wisp">
-        <button type="button" class="state-pill active" data-state="auto">Auto AI</button>
-        <button type="button" class="state-pill" data-state="breathing">breathing</button>
-        <button type="button" class="state-pill" data-state="listening">listening</button>
-        <button type="button" class="state-pill" data-state="working">working</button>
-        <button type="button" class="state-pill" data-state="searching">searching</button>
-        <button type="button" class="state-pill" data-state="solving">solving</button>
-        <button type="button" class="state-pill" data-state="connecting">connecting</button>
-        <button type="button" class="state-pill" data-state="weaving">weaving</button>
-        <button type="button" class="state-pill" data-state="composing">composing</button>
-        <button type="button" class="state-pill" data-state="shaping">shaping</button>
+        <div class="orb-state-switcher" id="orbStateSwitcher" role="tablist" aria-label="Trạng thái Wisp">
+          <button type="button" class="state-pill active" data-state="auto">Auto AI</button>
+          <button type="button" class="state-pill" data-state="breathing">breathing</button>
+          <button type="button" class="state-pill" data-state="listening">listening</button>
+          <button type="button" class="state-pill" data-state="working">working</button>
+          <button type="button" class="state-pill" data-state="searching">searching</button>
+          <button type="button" class="state-pill" data-state="solving">solving</button>
+          <button type="button" class="state-pill" data-state="connecting">connecting</button>
+          <button type="button" class="state-pill" data-state="weaving">weaving</button>
+          <button type="button" class="state-pill" data-state="composing">composing</button>
+          <button type="button" class="state-pill" data-state="shaping">shaping</button>
+        </div>
+      </section>
+    </aside>
+
+    <!-- CỘT PHẢI: KHUNG HIỂN THỊ CHAT & Ô NHẬP CHAT -->
+    <section class="chat-pane">
+      <main id="chat" class="chat-messages" aria-live="polite"></main>
+
+      <div class="composer-wrapper">
+        <footer class="chat-input-area">
+          <input
+            type="text"
+            id="msg"
+            class="chat-input"
+            placeholder="Nhắn cho Wisp..."
+            autocomplete="off"
+            autofocus
+          >
+          <button type="button" id="sendBtn" class="send-btn" aria-label="Gửi">
+            <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 19V5"></path>
+              <path d="m5 12 7-7 7 7"></path>
+            </svg>
+          </button>
+        </footer>
       </div>
     </section>
-
-    <main id="chat" class="chat-messages" aria-live="polite"></main>
-
-    <div class="composer-wrapper">
-      <footer class="chat-input-area">
-        <input
-          type="text"
-          id="msg"
-          class="chat-input"
-          placeholder="Nhắn cho Wisp..."
-          autocomplete="off"
-          autofocus
-        >
-        <button type="button" id="sendBtn" class="send-btn" aria-label="Gửi">
-          <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 19V5"></path>
-            <path d="m5 12 7-7 7 7"></path>
-          </svg>
-        </button>
-      </footer>
-    </div>
   </div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

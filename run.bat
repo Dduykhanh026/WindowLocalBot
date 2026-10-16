@@ -10,6 +10,22 @@ python -c "import flask" >nul 2>&1
 if errorlevel 1 goto :install_flask
 
 :start_bot
+set "OLLAMA_CMD="
+where ollama >nul 2>&1
+if not errorlevel 1 (
+    set "OLLAMA_CMD=ollama"
+) else if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" (
+    set "OLLAMA_CMD=%LOCALAPPDATA%\Programs\Ollama\ollama.exe"
+)
+
+if defined OLLAMA_CMD (
+    netstat -ano | findstr /R /C:":11434 .*LISTENING" >nul 2>&1
+    if errorlevel 1 (
+        echo Đang khởi động bộ não AI Local ^(Ollama^)...
+        start "" /b "%OLLAMA_CMD%" serve >nul 2>&1
+    )
+)
+
 echo Bot đang chạy tại http://127.0.0.1:5000 — đừng tắt cửa sổ này.
 start "" /b cmd /c "ping 127.0.0.1 -n 3 >nul & start http://127.0.0.1:5000"
 python app.py

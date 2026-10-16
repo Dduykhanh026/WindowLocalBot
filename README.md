@@ -1,6 +1,6 @@
-# 🤖 Bot Local Web (Windows)
+# 🤖 Wisp — Bot AI Local Web (Windows)
 
-Bot chat cá nhân chạy **100% trên máy tính Windows** của bạn với giao diện web gọn đẹp, mở ngay trong trình duyệt. Bạn có thể hỏi nhanh thời tiết hiện tại, dự báo ngày mai, giờ giấc các nước và ngày tháng mà không cần tài khoản hay cài đặt phức tạp.
+Bot chat cá nhân thông minh chạy **100% trên máy tính Windows** của bạn với giao diện web gọn đẹp, mở ngay trong trình duyệt. Wisp kết hợp **Fast-path tra cứu tức thì** (dữ liệu thời tiết thực tế từ **Open-Meteo**, giờ quốc tế, ngày tháng) cùng bộ não **AI Local Qwen 2.5 (3B)** chạy qua **Ollama** ngay trên máy — không cần tài khoản, không tốn phí API, bảo mật tuyệt đối.
 
 ---
 
@@ -13,26 +13,28 @@ Bot chat cá nhân chạy **100% trên máy tính Windows** của bạn với gi
 
 ### Bước 2: Mở Bot
 - Nhấp đúp (**double-click**) vào file **`run.bat`** trong thư mục này.
-- Lần đầu chạy, chương trình sẽ tự động tải thư viện cần thiết (mất khoảng vài giây).
+- `run.bat` sẽ tự động kiểm tra thư viện cần thiết, khởi động ngầm **Ollama** (`127.0.0.1:11434`) nếu có trên máy, và bật Web Server của Wisp.
 - Sau đó trình duyệt sẽ **tự động mở** trang chat tại địa chỉ `http://127.0.0.1:5000`.
 - *(Lưu ý: Giữ nguyên cửa sổ dòng lệnh màu đen trong lúc chat. Khi nào dùng xong bạn chỉ cần tắt cửa sổ đó đi).*
 
 ---
 
-## 💬 Các câu lệnh có thể hỏi Bot
+## 💬 Các câu lệnh & Tính năng AI Local
 
 Bạn có thể bấm trực tiếp vào **4 nút gợi ý nhanh** trên giao diện hoặc gõ câu hỏi (hỗ trợ **cả tiếng Việt có dấu và không dấu**):
 
-| Bạn muốn hỏi | Câu lệnh mẫu | Kết quả Bot trả về |
+| Bạn muốn hỏi | Câu lệnh mẫu | Kết quả Wisp trả về |
 |---|---|---|
 | **Thời tiết mặc định** | `thời tiết` | Thời tiết hiện tại ở Sài Gòn (nhiệt độ, cảm giác thực, độ ẩm, tốc độ gió) |
 | **Thời tiết các tỉnh/thành** | `thời tiết Hà Nội`<br>`thoi tiet Da Nang`<br>`thời tiết Đà Lạt` | Thời tiết hiện tại tại địa điểm bạn muốn tra cứu (hỗ trợ cả gõ không dấu) |
 | **Dự báo thời tiết ngày mai** | `thời tiết ngày mai Đà Lạt`<br>`thời tiết ngày mai` | Dự báo ngày mai gồm mô tả thời tiết, nhiệt độ thấp nhất/cao nhất và khả năng mưa (%) |
 | **Giờ Việt Nam hiện tại** | `mấy giờ`, `giờ` | Giờ hiện tại ở Việt Nam kèm thứ và ngày tháng |
-| **Giờ quốc tế** | `giờ ở Tokyo`, `giờ ở London`,<br>`giờ ở New York`, `giờ ở Seoul`,<br>`giờ ở Sydney`, `giờ ở Bangkok`,<br>`giờ ở Singapore`, `giờ ở Paris` | Giờ hiện tại ở các thành phố lớn trên thế giới (hỗ trợ thêm cả Mỹ, Anh, Nhật, Hàn, Pháp, Đức, Úc, Thái Lan, Trung Quốc...) |
+| **Giờ quốc tế** | `giờ ở Tokyo`, `giờ ở London`,<br>`giờ ở New York`, `giờ ở Seoul`,<br>`giờ ở Sydney`, `giờ ở Bangkok`,<br>`giờ ở Singapore`, `giờ ở Paris` | Giờ hiện tại ở các thành phố lớn trên thế giới (hỗ trợ thêm cả Mỹ, Anh, Nhật, Hàn, Pháp, Đức, Úc, Thái Lan...) |
 | **Ngày tháng hôm nay** | `hôm nay`, `ngày mấy` | Thứ trong tuần và ngày/tháng/năm hiện tại |
+| **Tư vấn thời tiết bằng AI** | `thời tiết Sài Gòn hôm nay mặc gì hợp?`<br>`ngày mai Đà Lạt có mưa không, nên đi đâu?` | Tự động lấy số liệu thật từ **Open-Meteo** kết hợp **AI Qwen 2.5 (3B)** để tư vấn trang phục, lịch trình |
+| **Hỏi đáp, Trò chuyện & Code (AI Local)** | `viết hàm SwiftUI tạo nút bo góc`<br>`giải thích StateWidget trong Flutter`<br>`kể chuyện vui` | Trả lời thông minh bằng tiếng Việt qua model **Qwen 2.5 (3B)** chạy trên **Ollama**, có nhớ ngữ cảnh 10 lượt hội thoại gần nhất |
+| **Xóa bộ nhớ trò chuyện AI** | `xóa lịch sử`, `clear`, `reset` | Xóa lịch sử hội thoại đang lưu trong RAM (`🧹 Wisp đã xóa lịch sử trò chuyện.`) |
 | **Xem hướng dẫn** | `help`, `trợ giúp` | Hiển thị danh sách tóm tắt tất cả các lệnh |
-| **Trò chuyện vui** | `hello`, `xin chào`,<br>`cảm ơn`, `tạm biệt` | Chào hỏi, cảm ơn và tạm biệt thân thiện |
 
 ---
 

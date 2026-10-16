@@ -1,13 +1,14 @@
-/* Giao diện Bot Local Web — Centerpiece Thinking Orb (libraries.dev/orbs) + Grok/ChatGPT */
+/* Giao diện Wisp — Split Layout 2 Cột (Trái: Thinking Orb | Phải: Chat) */
 :root,
 html[data-theme="dark"] {
   --bg-page: #09090b;
+  --bg-orb-pane: #070709;
   --bg-surface: #121216;
   --bg-elevated: #18181e;
   --bg-hover: #22222a;
   --bg-user-bubble: #1e1e25;
   --bg-code: rgba(255, 255, 255, 0.08);
-  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.075);
   --border-strong: rgba(255, 255, 255, 0.18);
   --text-primary: #f4f4f6;
   --text-secondary: #a1a1aa;
@@ -15,16 +16,17 @@ html[data-theme="dark"] {
   --accent-bg: #f4f4f6;
   --accent-fg: #09090b;
   --accent-hover: #ffffff;
-  --orb-glow: radial-gradient(circle, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0) 70%);
+  --orb-glow: radial-gradient(circle, rgba(255, 255, 255, 0.065) 0%, rgba(255, 255, 255, 0) 70%);
   --composer-shadow: 0 12px 36px -8px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.09);
   --composer-focus-shadow: 0 16px 42px -8px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 
 html[data-theme="light"] {
   --bg-page: #ffffff;
-  --bg-surface: #f7f7f9;
-  --bg-elevated: #f1f2f5;
-  --bg-hover: #e7e9ee;
+  --bg-orb-pane: #fafafa;
+  --bg-surface: #f4f4f7;
+  --bg-elevated: #eeeeF2;
+  --bg-hover: #e4e5eb;
   --bg-user-bubble: #f1f2f5;
   --bg-code: rgba(15, 23, 42, 0.06);
   --border-subtle: rgba(15, 23, 42, 0.08);
@@ -35,7 +37,7 @@ html[data-theme="light"] {
   --accent-bg: #0f172a;
   --accent-fg: #ffffff;
   --accent-hover: #1e293b;
-  --orb-glow: radial-gradient(circle, rgba(15, 23, 42, 0.04) 0%, rgba(15, 23, 42, 0) 70%);
+  --orb-glow: radial-gradient(circle, rgba(15, 23, 42, 0.045) 0%, rgba(15, 23, 42, 0) 70%);
   --composer-shadow: 0 10px 30px -8px rgba(15, 23, 42, 0.08), 0 0 0 1px rgba(15, 23, 42, 0.09);
   --composer-focus-shadow: 0 14px 36px -8px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.22);
 }
@@ -51,6 +53,7 @@ html[data-theme="light"] {
 html,
 body {
   height: 100%;
+  overflow: hidden;
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
   font-size: 16px;
   line-height: 1.62;
@@ -64,8 +67,8 @@ body {
 .theme-corner-btn {
   position: fixed;
   top: 18px;
-  right: 20px;
-  z-index: 20;
+  right: 22px;
+  z-index: 30;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -100,43 +103,58 @@ html[data-theme="light"] .icon-sun {
   display: none;
 }
 
-/* Khung chính 1 cột căn giữa */
-.chat-container {
+/* Bố cục chia 2 cột toàn màn hình */
+.split-layout {
   display: flex;
-  flex-direction: column;
-  width: 100%;
-  max-width: 720px;
+  width: 100vw;
   height: 100vh;
   height: 100dvh;
-  margin: 0 auto;
-  position: relative;
 }
 
-/* Sân khấu Thinking Orb chính giữa */
+/* CỘT TRÁI: Sân khấu Thinking Orb của Wisp (50% màn hình) */
+.orb-pane {
+  flex: 1 1 50%;
+  width: 50%;
+  height: 100%;
+  background-color: var(--bg-orb-pane);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
 .orb-stage {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 26px 16px 10px;
-  flex-shrink: 0;
   user-select: none;
+  width: 100%;
 }
 
 .orb-canvas-wrap {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 340px;
-  height: 340px;
+  width: 480px;
+  height: 480px;
+  max-width: min(480px, 44vw, 64vh);
+  max-height: min(480px, 44vw, 64vh);
   border-radius: 50%;
   background: var(--orb-glow);
   cursor: pointer;
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.orb-canvas-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 .orb-canvas-wrap:hover {
-  transform: scale(1.04);
+  transform: scale(1.03);
 }
 
 .orb-canvas-wrap:active {
@@ -144,32 +162,32 @@ html[data-theme="light"] .icon-sun {
 }
 
 .wisp-title {
-  font-size: 20px;
+  font-size: 26px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
   color: var(--text-primary);
-  margin-top: 2px;
+  margin-top: 8px;
 }
 
 .orb-status {
-  min-height: 22px;
-  margin-top: 2px;
+  min-height: 24px;
+  margin-top: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .orb-status-text {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 500;
   color: var(--text-secondary);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.015em;
   opacity: 0;
   transition: opacity 0.2s ease;
 }
 
 .orb-status-text.visible {
-  opacity: 0.85;
+  opacity: 0.88;
 }
 
 /* Thanh chọn 9 trạng thái chuẩn của thinking-orbs */
@@ -177,16 +195,16 @@ html[data-theme="light"] .icon-sun {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 5px;
-  margin-top: 8px;
-  max-width: 560px;
+  gap: 6px;
+  margin-top: 16px;
+  max-width: 480px;
 }
 
 .state-pill {
   font-family: inherit;
   font-size: 11.5px;
   font-weight: 500;
-  padding: 3px 9px;
+  padding: 4px 10px;
   border-radius: 999px;
   background: transparent;
   border: 1px solid var(--border-subtle);
@@ -207,15 +225,36 @@ html[data-theme="light"] .icon-sun {
   border-color: var(--accent-bg);
 }
 
-/* Khung tin nhắn cuộn dọc */
+/* CỘT PHẢI: Khung hiển thị chat & ô nhập chat (50% màn hình) */
+.chat-pane {
+  flex: 1 1 50%;
+  width: 50%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-page);
+}
+
 .chat-messages {
   flex: 1;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
   overflow-y: auto;
-  padding: 14px 24px 18px;
+  padding: 36px 32px 20px;
   display: flex;
   flex-direction: column;
   gap: 20px;
   scroll-behavior: smooth;
+}
+
+.chat-messages:empty::before {
+  content: "Trò chuyện cùng Wisp ở khung bên dưới…";
+  margin: auto;
+  font-size: 14px;
+  color: var(--text-muted);
+  opacity: 0.65;
 }
 
 .chat-messages::-webkit-scrollbar {
@@ -252,7 +291,7 @@ html[data-theme="light"] .icon-sun {
 }
 
 .bot-message {
-  max-width: 92%;
+  max-width: 90%;
   padding: 2px 0;
   color: var(--text-primary);
 }
@@ -284,9 +323,12 @@ html[data-theme="light"] .icon-sun {
   border-color: var(--border-strong);
 }
 
-/* Cụm Composer nổi ở đáy */
+/* Cụm Composer nổi ở đáy cột phải */
 .composer-wrapper {
-  padding: 8px 24px 22px;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 10px 32px 26px;
   flex-shrink: 0;
 }
 
@@ -373,32 +415,37 @@ html[data-theme="light"] .icon-sun {
   }
 }
 
-@media (max-width: 480px) {
-  .orb-stage {
-    padding: 18px 10px 8px;
+/* Responsive khi thu hẹp cửa sổ (< 820px) */
+@media (max-width: 820px) {
+  .split-layout {
+    flex-direction: column;
+  }
+
+  .orb-pane {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    height: auto;
+    padding: 16px 12px 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
   }
 
   .orb-canvas-wrap {
-    width: 128px;
-    height: 128px;
+    width: 180px;
+    height: 180px;
+  }
+
+  .orb-canvas-wrap canvas {
+    width: 170px !important;
+    height: 170px !important;
   }
 
   .chat-messages {
-    padding: 10px 16px 14px;
-    gap: 16px;
-  }
-
-  .user-message {
-    max-width: 86%;
-    padding: 9px 15px;
-    font-size: 15px;
-  }
-
-  .bot-message {
-    font-size: 15px;
+    padding: 16px 18px;
   }
 
   .composer-wrapper {
-    padding: 6px 14px 16px;
+    padding: 8px 16px 16px;
   }
 }
