@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🤖 Bot Local</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="chat-container">
+    <header class="chat-header">
+      <div class="header-title">🤖 Bot Local</div>
+      <div class="header-subtitle">Chạy local trên máy này</div>
+    </header>
+
+    <main id="chat" class="chat-messages" aria-live="polite">
+      <div class="message bot-message">{{ greeting if greeting is defined else "👋 Chào Nguyen! Mình là bot local chạy trên máy Windows này.\nHỏi mình `thời tiết`, `mấy giờ`, `hôm nay`…\nGõ `help` để xem tất cả lệnh nhé." }}</div>
+    </main>
+
+    <div id="typingIndicator" class="typing-indicator hidden" aria-live="polite">
+      <span class="typing-spinner" aria-hidden="true"></span>
+      <span>Bot đang trả lời…</span>
+    </div>
+
+    <div class="quick-actions" role="group" aria-label="Lệnh nhanh">
+      <button type="button" class="quick-btn" data-msg="thời tiết Sài Gòn">🌤️ Thời tiết Sài Gòn</button>
+      <button type="button" class="quick-btn" data-msg="mấy giờ">🕐 Mấy giờ</button>
+      <button type="button" class="quick-btn" data-msg="hôm nay">📅 Hôm nay</button>
+      <button type="button" class="quick-btn" data-msg="help">❓ Help</button>
+    </div>
+
+    <footer class="chat-input-area">
+      <input
+        type="text"
+        id="msg"
+        class="chat-input"
+        placeholder="Nhập câu hỏi (vd: thời tiết Hà Nội, mấy giờ)..."
+        autocomplete="off"
+        autofocus
+      >
+      <button type="button" id="sendBtn" class="send-btn">Gửi</button>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
