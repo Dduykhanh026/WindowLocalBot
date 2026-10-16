@@ -3,68 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🤖 Bot Local</title>
+  <title>Bot Local</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <div class="chat-container">
-    <header class="chat-header">
-      <div class="header-brand">
-        <button type="button" id="orbModeBtn" class="orb-header-btn" title="Bấm để đổi hiệu ứng Thinking Orb">
-          <canvas id="headerOrb" width="32" height="32" aria-label="Thinking Orb"></canvas>
-        </button>
-        <div class="header-text">
-          <div class="header-title-row">
-            <span class="header-title">🤖 Bot Local</span>
-            <span id="orbModeBadge" class="orb-mode-badge">globe</span>
-          </div>
-          <div class="header-subtitle">Chạy local trên máy này</div>
-        </div>
-      </div>
+  <button type="button" id="themeToggleBtn" class="theme-corner-btn" title="Đổi giao diện Sáng / Tối" aria-label="Đổi giao diện Sáng / Tối">
+    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"></circle>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+    </svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+    </svg>
+  </button>
 
-      <div class="header-actions">
-        <button type="button" id="themeToggleBtn" class="icon-btn" title="Đổi giao diện Sáng / Tối" aria-label="Đổi giao diện Sáng / Tối">
-          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="4"></circle>
-            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
-          </svg>
-          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-          </svg>
-        </button>
+  <div class="chat-container">
+    <section class="orb-stage">
+      <button type="button" id="orbModeBtn" class="orb-hero-btn" title="Bấm để đổi hình thái Thinking Orb">
+        <canvas id="centerOrb" width="168" height="168" aria-label="Thinking Orb"></canvas>
+      </button>
+      <div id="typingIndicator" class="orb-status" aria-live="polite">
+        <span id="typingText" class="orb-status-text"></span>
       </div>
-    </header>
+    </section>
 
     <main id="chat" class="chat-messages" aria-live="polite">
       <div class="message-row bot-row">
-        <div class="bot-avatar">
-          <canvas class="msg-orb" data-state="breathing" width="28" height="28" aria-hidden="true"></canvas>
-        </div>
         <div class="message bot-message">{{ greeting if greeting is defined else "👋 Chào Nguyen! Mình là bot local chạy trên máy Windows này.\nHỏi mình `thời tiết`, `mấy giờ`, `hôm nay`…\nGõ `help` để xem tất cả lệnh nhé." }}</div>
       </div>
     </main>
 
-    <div id="typingIndicator" class="typing-indicator hidden" aria-live="polite">
-      <div class="typing-inner">
-        <canvas id="typingOrb" width="32" height="32" aria-hidden="true"></canvas>
-        <span id="typingText" class="typing-label">Bot đang trả lời…</span>
-      </div>
-    </div>
-
     <div class="composer-wrapper">
-      <div class="quick-actions" role="group" aria-label="Lệnh nhanh">
-        <button type="button" class="quick-btn" data-msg="thời tiết Sài Gòn">🌤️ Thời tiết Sài Gòn</button>
-        <button type="button" class="quick-btn" data-msg="mấy giờ">🕐 Mấy giờ</button>
-        <button type="button" class="quick-btn" data-msg="hôm nay">📅 Hôm nay</button>
-        <button type="button" class="quick-btn" data-msg="help">❓ Help</button>
-      </div>
-
       <footer class="chat-input-area">
         <input
           type="text"
           id="msg"
           class="chat-input"
-          placeholder="Hỏi bất kỳ điều gì (thời tiết Hà Nội, mấy giờ, hôm nay)..."
+          placeholder="Hỏi bất kỳ điều gì..."
           autocomplete="off"
           autofocus
         >
@@ -73,7 +48,6 @@
             <path d="M12 19V5"></path>
             <path d="m5 12 7-7 7 7"></path>
           </svg>
-          <span class="send-label">Gửi</span>
         </button>
       </footer>
     </div>

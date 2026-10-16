@@ -1,6 +1,6 @@
 /**
- * Bot Local Web — Giao diện chuẩn ChatGPT / Grok tích hợp thư viện thinking-orbs (v0.3.2)
- * Nguồn engine: thinking-orbs by Jakub Antalik (MIT License) — chạy 100% local trên Canvas 2D.
+ * Bot Local Web — Centerpiece Thinking Orb (thinking-orbs v0.3.2 by Jakub Antalik)
+ * Giao diện tối giản chuẩn Grok / ChatGPT, 100% chạy local trên Canvas 2D.
  */
 
 /* ==========================================================================
@@ -586,57 +586,20 @@ const STATE_TO_MODE = {
 };
 
 const PRESETS = {
-  orbits: {
-    64: { speed: 1.885, count: 1, size: 1 },
-    32: { speed: 2.9072, count: 0.4251, size: 1.6849 },
-    20: { speed: 3.9, count: 0.238, size: 2.4 },
-  },
-  globe: {
-    64: { speed: 2.015, count: 0.42, size: 1.15, extra: { scanMul: 4.08, dimBase: 0.45 } },
-    32: { speed: 2.3803, count: 0.1839, size: 1.4769, extra: { scanMul: 4.2301, dimBase: 0.45 } },
-    20: { speed: 2.665, count: 0.105, size: 1.75, extra: { scanMul: 4.335, dimBase: 0.45 } },
-  },
-  rubik: {
-    64: { speed: 1.82, count: 0.35, size: 1.05 },
-    32: { speed: 1.8964, count: 0.1537, size: 1.4951 },
-    20: { speed: 1.95, count: 0.088, size: 1.9 },
-  },
-  wave: {
-    64: { speed: 4.388, count: 0.341, size: 1 },
-    32: { speed: 4.1512, count: 0.169, size: 1.3232 },
-    20: { speed: 3.998, count: 0.105, size: 1.6 },
-  },
-  web: {
-    64: { speed: 3.315, count: 1.35, size: 0.95 },
-    32: { speed: 5.0104, count: 0.4942, size: 1.2571 },
-    20: { speed: 6.63, count: 0.25, size: 1.52 },
-  },
-  braid: {
-    64: { speed: 1.625, count: 0.5, size: 1 },
-    32: { speed: 2.2234, count: 0.2056, size: 1.2011 },
-    20: { speed: 2.75, count: 0.1125, size: 1.36 },
-  },
-  ribbon: {
-    64: { speed: 2.34, count: 0.25, size: 0.85, extra: { spin: 0, bandMul: 3.9, wobMul: 1 } },
-    32: { speed: 2.7776, count: 0.0969, size: 0.9766, extra: { spin: 0, bandMul: 4.49, wobMul: 1 } },
-    20: { speed: 3.12, count: 0.051, size: 1.073, extra: { spin: 0, bandMul: 4.94, wobMul: 1 } },
-  },
-  ring: {
-    64: { speed: 3.24, count: 0.25, size: 0.956, extra: { spin: 0, bandMul: 3.627, wobMul: 0.368 } },
-    32: { speed: 3.5517, count: 0.0678, size: 1.31, extra: { spin: 0, bandMul: 3.8265, wobMul: 0.4751 } },
-    20: { speed: 3.78, count: 0.028, size: 1.622, extra: { spin: 0, bandMul: 3.968, wobMul: 0.565 } },
-  },
-  morph: {
-    64: { speed: 2.405, count: 0.702, size: 0.395, extra: { spread: 1.45 } },
-    32: { speed: 2.2057, count: 0.5937, size: 0.6916, extra: { spread: 1.45 } },
-    20: { speed: 2.08, count: 0.53, size: 1.011, extra: { spread: 1.45 } },
-  },
+  orbits: { speed: 1.55, count: 1.0, size: 0.95 },
+  globe: { speed: 1.65, count: 0.72, size: 1.0, extra: { scanMul: 4.08, dimBase: 0.45 } },
+  rubik: { speed: 1.6, count: 0.65, size: 0.98 },
+  wave: { speed: 3.2, count: 0.65, size: 0.95 },
+  web: { speed: 2.6, count: 1.4, size: 0.92 },
+  braid: { speed: 1.45, count: 0.78, size: 0.95 },
+  ribbon: { speed: 1.95, count: 0.5, size: 0.85, extra: { spin: 0, bandMul: 3.9, wobMul: 1 } },
+  ring: { speed: 2.6, count: 0.45, size: 0.92, extra: { spin: 0, bandMul: 3.627, wobMul: 0.368 } },
+  morph: { speed: 2.1, count: 0.85, size: 0.42, extra: { spread: 1.45 } },
 };
 
-function resolvePreset(state, size) {
+function resolvePreset(state) {
   const mode = STATE_TO_MODE[state] || "globe";
-  const bucket = size >= 48 ? 64 : size >= 26 ? 32 : 20;
-  const preset = PRESETS[mode][bucket];
+  const preset = PRESETS[mode];
   let opts = { ...BASE_PROFILES[mode] };
   if (preset.count !== 1) opts = scaleCounts(opts, preset.count);
   if (preset.size !== 1) opts = scaleRadii(opts, preset.size);
@@ -649,11 +612,12 @@ function isDarkMode() {
 }
 
 /**
- * Khởi tạo một ThinkingOrb chạy mượt trên phần tử <canvas>.
+ * Khởi tạo ThinkingOrb trung tâm với độ phân giải cao.
  */
-function mountThinkingOrb(canvas, initialState = "searching", size = 32) {
+function mountThinkingOrb(canvas, initialState = "searching", size = 168) {
   if (!canvas) return null;
   let currentState = initialState;
+  let speedMultiplier = 1;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   canvas.width = Math.round(size * dpr);
   canvas.height = Math.round(size * dpr);
@@ -662,32 +626,29 @@ function mountThinkingOrb(canvas, initialState = "searching", size = 32) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
-  let preset = resolvePreset(currentState, size);
+  let preset = resolvePreset(currentState);
   let frameFn = MODE_FRAMES[preset.mode];
-  let rafId = 0;
+  let accTime = 0;
+  let lastNow = performance.now();
 
-  function render() {
-    if (!canvas.isConnected) {
-      cancelAnimationFrame(rafId);
-      return;
-    }
-    const tSec = (performance.now() / 1000) * preset.speed;
+  function render(now) {
+    const dt = Math.min(0.05, Math.max(0, (now - lastNow) / 1000));
+    lastNow = now;
+    accTime += dt * preset.speed * speedMultiplier;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size, size);
-    paintFrame(ctx, frameFn(size, tSec, preset.opts), isDarkMode());
-    rafId = requestAnimationFrame(render);
+    paintFrame(ctx, frameFn(size, accTime, preset.opts), isDarkMode());
+    requestAnimationFrame(render);
   }
 
-  rafId = requestAnimationFrame(render);
+  requestAnimationFrame(render);
 
   return {
-    setState(nextState) {
+    setState(nextState, nextSpeedMul = 1) {
       currentState = nextState;
-      preset = resolvePreset(currentState, size);
+      speedMultiplier = nextSpeedMul;
+      preset = resolvePreset(currentState);
       frameFn = MODE_FRAMES[preset.mode];
-    },
-    getState() {
-      return currentState;
     },
     getMode() {
       return preset.mode;
@@ -715,30 +676,39 @@ const ORB_STATES = [
 const chatEl = document.getElementById("chat");
 const msgInput = document.getElementById("msg");
 const sendBtn = document.getElementById("sendBtn");
-const typingIndicator = document.getElementById("typingIndicator");
 const typingText = document.getElementById("typingText");
-const quickBtns = document.querySelectorAll(".quick-btn");
-const headerOrbCanvas = document.getElementById("headerOrb");
-const typingOrbCanvas = document.getElementById("typingOrb");
+const centerOrbCanvas = document.getElementById("centerOrb");
 const orbModeBtn = document.getElementById("orbModeBtn");
-const orbModeBadge = document.getElementById("orbModeBadge");
 const themeToggleBtn = document.getElementById("themeToggleBtn");
 
 let isSending = false;
 let currentOrbIndex = 0;
+let labelTimer = 0;
 
-// Mount Thinking Orbs
-const headerOrb = mountThinkingOrb(headerOrbCanvas, ORB_STATES[currentOrbIndex], 32);
-const typingOrb = mountThinkingOrb(typingOrbCanvas, "searching", 32);
+// Mount quả cầu Thinking Orb lớn ở chính giữa màn hình
+const centerOrb = mountThinkingOrb(centerOrbCanvas, ORB_STATES[currentOrbIndex], 168);
 
-// Mount orb cho câu chào đầu tiên
-document.querySelectorAll(".msg-orb").forEach((c) => {
-  mountThinkingOrb(c, c.getAttribute("data-state") || "breathing", 28);
-});
+function showOrbLabel(text, autoHideMs = 0) {
+  if (!typingText) return;
+  clearTimeout(labelTimer);
+  if (!text) {
+    typingText.classList.remove("visible");
+    return;
+  }
+  typingText.textContent = text;
+  typingText.classList.add("visible");
+  if (autoHideMs > 0) {
+    labelTimer = setTimeout(() => {
+      if (!isSending) {
+        typingText.classList.remove("visible");
+      }
+    }, autoHideMs);
+  }
+}
 
 /**
  * Escape HTML để chống XSS tuyệt đối, sau đó định dạng các cụm trong dấu `...`
- * thành thẻ <code class="inline-code"> đẹp mắt như ChatGPT / Grok.
+ * thành thẻ <code class="inline-code"> có thể bấm để gửi lệnh ngay.
  */
 function formatSafeMessageHtml(text) {
   const escaped = String(text)
@@ -750,7 +720,6 @@ function formatSafeMessageHtml(text) {
   return escaped.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
 }
 
-// Định dạng lại bong bóng câu chào lúc mới mở trang
 const initialBotMsg = document.querySelector("#chat .bot-message");
 if (initialBotMsg) {
   initialBotMsg.innerHTML = formatSafeMessageHtml(initialBotMsg.textContent || "");
@@ -761,13 +730,10 @@ function scrollToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
-/**
- * Chọn trạng thái Thinking Orb phù hợp với ngữ cảnh câu hỏi.
- */
 function pickOrbStateForQuery(query) {
   const q = query.toLowerCase();
   if (q.includes("thời tiết") || q.includes("thoi tiet") || q.includes("weather")) {
-    return { state: "searching", label: "Bot đang trả lời… (tra cứu thời tiết)" };
+    return { state: "searching", label: "Bot đang trả lời…" };
   }
   if (q.includes("giờ") || q.includes("gio") || q.includes("hôm nay") || q.includes("hom nay")) {
     return { state: "working", label: "Bot đang trả lời…" };
@@ -778,30 +744,11 @@ function pickOrbStateForQuery(query) {
   return { state: "solving", label: "Bot đang trả lời…" };
 }
 
-/**
- * Thêm tin nhắn mới vào khung chat.
- * @param {string} text Nội dung tin nhắn
- * @param {"user" | "bot"} sender Người gửi
- * @param {string} [orbState] Trạng thái orb đại diện cho câu trả lời bot
- */
-function appendMessage(text, sender, orbState = "breathing") {
+function appendMessage(text, sender) {
   if (!chatEl) return;
 
   const row = document.createElement("div");
   row.className = `message-row ${sender === "user" ? "user-row" : "bot-row"}`;
-
-  if (sender === "bot") {
-    const avatar = document.createElement("div");
-    avatar.className = "bot-avatar";
-    const orbCanvas = document.createElement("canvas");
-    orbCanvas.className = "msg-orb";
-    orbCanvas.width = 28;
-    orbCanvas.height = 28;
-    orbCanvas.setAttribute("aria-hidden", "true");
-    avatar.appendChild(orbCanvas);
-    row.appendChild(avatar);
-    mountThinkingOrb(orbCanvas, orbState, 28);
-  }
 
   const bubble = document.createElement("div");
   bubble.className = `message ${sender === "user" ? "user-message" : "bot-message"}`;
@@ -820,23 +767,14 @@ function setSendingState(sending, queryText = "") {
   isSending = sending;
   if (sendBtn) sendBtn.disabled = sending;
   if (msgInput) msgInput.disabled = sending;
-  quickBtns.forEach((btn) => {
-    btn.disabled = sending;
-  });
 
-  if (typingIndicator) {
-    if (sending) {
-      const { state, label } = pickOrbStateForQuery(queryText);
-      if (typingOrb) typingOrb.setState(state);
-      if (headerOrb) headerOrb.setState(state);
-      if (orbModeBadge && headerOrb) orbModeBadge.textContent = headerOrb.getMode();
-      if (typingText) typingText.textContent = label;
-      typingIndicator.classList.remove("hidden");
-    } else {
-      typingIndicator.classList.add("hidden");
-      if (headerOrb) headerOrb.setState(ORB_STATES[currentOrbIndex]);
-      if (orbModeBadge && headerOrb) orbModeBadge.textContent = headerOrb.getMode();
-    }
+  if (sending) {
+    const { state, label } = pickOrbStateForQuery(queryText);
+    if (centerOrb) centerOrb.setState(state, 1.45);
+    showOrbLabel(label, 0);
+  } else {
+    if (centerOrb) centerOrb.setState(ORB_STATES[currentOrbIndex], 1.0);
+    showOrbLabel("", 0);
   }
   scrollToBottom();
 }
@@ -858,7 +796,6 @@ async function sendMessage(presetText) {
     msgInput.value = "";
   }
 
-  const { state: replyOrbState } = pickOrbStateForQuery(message);
   setSendingState(true, message);
 
   try {
@@ -871,7 +808,7 @@ async function sendMessage(presetText) {
     });
 
     if (!response.ok) {
-      appendMessage(FALLBACK_ERROR, "bot", "shaping");
+      appendMessage(FALLBACK_ERROR, "bot");
       return;
     }
 
@@ -880,9 +817,9 @@ async function sendMessage(presetText) {
       data && typeof data.reply === "string" && data.reply.trim() !== ""
         ? data.reply
         : FALLBACK_ERROR;
-    appendMessage(reply, "bot", replyOrbState);
+    appendMessage(reply, "bot");
   } catch (_err) {
-    appendMessage(FALLBACK_ERROR, "bot", "shaping");
+    appendMessage(FALLBACK_ERROR, "bot");
   } finally {
     setSendingState(false);
     if (msgInput) {
@@ -891,19 +828,19 @@ async function sendMessage(presetText) {
   }
 }
 
-// Bấm vào Orb trên header để chuyển qua lại 9 hiệu ứng Thinking Orb
+// Bấm vào quả cầu Thinking Orb ở giữa màn hình để đổi qua 9 hình thái 3D
 if (orbModeBtn) {
   orbModeBtn.addEventListener("click", () => {
     currentOrbIndex = (currentOrbIndex + 1) % ORB_STATES.length;
     const nextState = ORB_STATES[currentOrbIndex];
-    if (headerOrb) {
-      headerOrb.setState(nextState);
-      if (orbModeBadge) orbModeBadge.textContent = headerOrb.getMode();
+    if (centerOrb) {
+      centerOrb.setState(nextState, 1.0);
+      showOrbLabel(centerOrb.getMode(), 1400);
     }
   });
 }
 
-// Đổi giao diện Dark / Light
+// Đổi giao diện Sáng / Tối
 if (themeToggleBtn) {
   themeToggleBtn.addEventListener("click", () => {
     const nextTheme = isDarkMode() ? "light" : "dark";
@@ -911,7 +848,7 @@ if (themeToggleBtn) {
   });
 }
 
-// Bấm vào thẻ `code` gợi ý trong tin nhắn bot để gửi nhanh lệnh đó
+// Bấm vào các thẻ `code` trong lời chào / help để gửi lệnh ngay
 if (chatEl) {
   chatEl.addEventListener("click", (e) => {
     const codeEl = e.target.closest(".inline-code");
@@ -935,12 +872,5 @@ if (msgInput) {
     }
   });
 }
-
-quickBtns.forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const text = btn.getAttribute("data-msg") || btn.textContent || "";
-    sendMessage(text);
-  });
-});
 
 window.sendMessage = sendMessage;
