@@ -1,0 +1,11 @@
+{
+  "name": "Nguyễn Duy Khánh",
+  "gender": "Nam",
+  "age": "26",
+  "height_cm": "175",
+  "weight_kg": "65",
+  "city": "Sài Gòn",
+  "job": "Kỹ sư",
+  "notes": "",
+  "auto_learn": true
+}

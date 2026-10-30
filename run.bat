@@ -6,7 +6,7 @@ cd /d "%~dp0"
 python --version >nul 2>&1
 if errorlevel 1 goto :no_python
 
-python -c "import flask" >nul 2>&1
+python -c "import flask, edge_tts" >nul 2>&1
 if errorlevel 1 goto :install_flask
 
 :start_bot

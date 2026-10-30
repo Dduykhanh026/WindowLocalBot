@@ -4,39 +4,453 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Wisp</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/iconsax-font-icon@1.1.0/dist/icons.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261017_4">
 </head>
 <body>
-  <!-- Thanh chuyển đổi 2 chế độ: Chế độ Chat | Chế độ Nói -->
-  <nav class="mode-switcher" aria-label="Chế độ tương tác">
-    <button type="button" id="modeChatBtn" class="mode-tab active" data-mode="chat">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-      </svg>
-      <span>Chế độ Chat</span>
-    </button>
-    <button type="button" id="modeVoiceBtn" class="mode-tab" data-mode="voice">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-        <line x1="12" x2="12" y1="19" y2="22"></line>
-      </svg>
-      <span>Chế độ Nói</span>
-    </button>
-  </nav>
+  <!-- Thanh điều khiển nổi trên cùng (Floating Glassmorphic Assistant Bar) — Thiết kế gọn gàng chuẩn Trợ lý cá nhân -->
+  <div class="top-bar-left">
+    <!-- Cụm 1: Chuyển đổi Chế độ Chat / Nói -->
+    <nav class="mode-switcher" aria-label="Chế độ tương tác">
+      <button type="button" id="modeChatBtn" class="mode-tab active" data-mode="chat" title="Chế độ Chat văn bản">
+        <!-- Iconsax: message-text-1 -->
+        <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8.5 19H8C4 19 2 18 2 13V8C2 4 4 2 8 2H16C20 2 22 4 22 8V13C22 17 20 19 16 19H15.5C15.19 19 14.89 19.15 14.7 19.4L13.2 21.4C12.54 22.28 11.46 22.28 10.8 21.4L9.3 19.4C9.14 19.18 8.77 19 8.5 19Z"></path>
+          <path d="M7 8H17"></path>
+          <path d="M7 13H13"></path>
+        </svg>
+        <span>Chat</span>
+      </button>
+      <button type="button" id="modeVoiceBtn" class="mode-tab" data-mode="voice" title="Chế độ Đàm thoại Giọng nói 2 chiều">
+        <!-- Iconsax: microphone-2 -->
+        <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 15.5C14.21 15.5 16 13.71 16 11.5V6C16 3.79 14.21 2 12 2C9.79 2 8 3.79 8 6V11.5C8 13.71 9.79 15.5 12 15.5Z"></path>
+          <path d="M4.35 9.65V11.35C4.35 15.57 7.78 19 12 19C16.22 19 19.65 15.57 19.65 11.35V9.65"></path>
+          <path d="M10.61 6.43C11.51 6.1 12.49 6.1 13.39 6.43"></path>
+          <path d="M11.2 8.55C11.73 8.41 12.28 8.41 12.81 8.55"></path>
+          <path d="M12 19V22"></path>
+        </svg>
+        <span>Nói</span>
+      </button>
+    </nav>
 
+    <!-- Cụm 2 (MỚI): Hồ sơ Chủ nhân & Bộ nhớ Trợ lý Cá nhân -->
+    <div class="ai-config-wrap profile-config-wrap" id="userProfileWrap">
+      <button type="button" id="userProfileBtn" class="profile-pill-btn" aria-expanded="false" aria-controls="userProfilePanel" title="Hồ sơ cá nhân của bạn (Tên, tuổi, chiều cao, cân nặng, nơi ở, công việc)">
+        <span class="profile-avatar-dot" aria-hidden="true">
+          <!-- Iconsax: user -->
+          <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 12C14.7614 12 17 9.76142 17 7C17 4.23858 14.7614 2 12 2C9.23858 2 7 4.23858 7 7C7 9.76142 9.23858 12 12 12Z"></path>
+            <path d="M20.5899 22C20.5899 18.13 16.7399 15 11.9999 15C7.25991 15 3.40991 18.13 3.40991 22"></path>
+          </svg>
+        </span>
+        <span id="profileTopName" class="profile-top-name">{{ profile.name if profile and profile.name else 'Bạn' }}</span>
+        <span class="profile-top-sep" aria-hidden="true">·</span>
+        <span id="profileTopMeta" class="profile-top-meta">{{ profile.city if profile and profile.city else 'TP.HCM' }}</span>
+      </button>
+
+      <!-- Bảng Popover Hồ sơ Cá nhân & Trí nhớ Trợ lý Wisp -->
+      <div id="userProfilePanel" class="ai-config-panel user-profile-panel" role="dialog" aria-label="Hồ sơ cá nhân của chủ nhân" hidden>
+        <div class="ai-config-header">
+          <div class="ai-config-title-wrap">
+            <svg class="isax ai-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 12C14.7614 12 17 9.76142 17 7C17 4.23858 14.7614 2 12 2C9.23858 2 7 4.23858 7 7C7 9.76142 9.23858 12 12 12Z"></path>
+              <path d="M20.5899 22C20.5899 18.13 16.7399 15 11.9999 15C7.25991 15 3.40991 18.13 3.40991 22"></path>
+            </svg>
+            <div>
+              <span class="ai-config-title">Hồ sơ của tôi (Bộ nhớ Wisp)</span>
+              <span class="profile-subtitle">Giúp Wisp hiểu bạn để tư vấn thời tiết, sức khỏe & công việc chuẩn xác</span>
+            </div>
+          </div>
+          <button type="button" id="resetProfileBtn" class="ai-reset-btn" title="Khôi phục hồ sơ mặc định">
+            <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 12C22 17.52 17.52 22 12 22C6.48 22 3.11 16.44 3.11 16.44M3.11 16.44H7.63M3.11 16.44V21.44M2 12C2 6.48 6.44 2 12 2C18.67 2 22 7.56 22 7.56M22 7.56V2.56M22 7.56H17.56"></path>
+            </svg>
+            <span>Mặc định</span>
+          </button>
+        </div>
+
+        <!-- Thẻ tóm tắt BMI & Thể trạng tự động (hiện khi có chiều cao + cân nặng) -->
+        <div id="bmiSummaryCard" class="bmi-summary-card" hidden>
+          <div class="bmi-badge-main">
+            <span class="bmi-label-tag">Chỉ số BMI</span>
+            <strong id="bmiValueText">22.5</strong>
+            <span id="bmiStatusBadge" class="bmi-status-pill">Cân đối</span>
+          </div>
+          <span id="waterRecommendText" class="bmi-water-hint">💧 Nên uống ~2.3L nước/ngày</span>
+        </div>
+
+        <!-- Lưới nhập thông tin cá nhân -->
+        <div class="profile-form-grid">
+          <label class="profile-field">
+            <span class="profile-field-label">Tên gọi</span>
+            <input type="text" id="profNameInput" class="profile-input" placeholder="VD: Khánh" maxlength="35">
+          </label>
+          <label class="profile-field">
+            <span class="profile-field-label">Giới tính</span>
+            <select id="profGenderInput" class="profile-input">
+              <option value="Nam" {% if profile and profile.gender == "Nam" %}selected{% endif %}>Nam</option>
+              <option value="Nữ" {% if profile and profile.gender == "Nữ" %}selected{% endif %}>Nữ</option>
+              <option value="Khác" {% if profile and profile.gender == "Khác" %}selected{% endif %}>Khác</option>
+            </select>
+          </label>
+          <label class="profile-field">
+            <span class="profile-field-label">Tuổi</span>
+            <input type="number" id="profAgeInput" class="profile-input" placeholder="VD: 25" min="8" max="100">
+          </label>
+          <label class="profile-field">
+            <span class="profile-field-label">Chiều cao (cm)</span>
+            <input type="number" id="profHeightInput" class="profile-input" placeholder="VD: 172" min="100" max="230">
+          </label>
+          <label class="profile-field">
+            <span class="profile-field-label">Cân nặng (kg)</span>
+            <input type="number" id="profWeightInput" class="profile-input" placeholder="VD: 66" min="25" max="220" step="0.5">
+          </label>
+          <label class="profile-field profile-field-full">
+            <span class="profile-field-label">Nơi ở hiện tại (Thành phố mặc định khi hỏi thời tiết)</span>
+            <input type="text" id="profCityInput" class="profile-input" list="vnCitiesList" placeholder="VD: TP. Hồ Chí Minh, Đà Nẵng, Hà Nội..." maxlength="50">
+            <datalist id="vnCitiesList">
+              <option value="TP. Hồ Chí Minh"></option>
+              <option value="Hà Nội"></option>
+              <option value="Đà Nẵng"></option>
+              <option value="Đà Lạt"></option>
+              <option value="Cần Thơ"></option>
+              <option value="Hải Phòng"></option>
+              <option value="Nha Trang"></option>
+              <option value="Vũng Tàu"></option>
+              <option value="Huế"></option>
+              <option value="Quy Nhơn"></option>
+              <option value="Buôn Ma Thuột"></option>
+            </datalist>
+          </label>
+          <label class="profile-field profile-field-full">
+            <span class="profile-field-label">Công việc & Chuyên môn</span>
+            <input type="text" id="profJobInput" class="profile-input" placeholder="VD: iOS/SwiftUI & Flutter Developer" maxlength="80">
+          </label>
+          <label class="profile-field profile-field-full">
+            <span class="profile-field-label">Thói quen / Sở thích / Lưu ý sức khỏe</span>
+            <textarea id="profNotesInput" class="profile-input profile-textarea" rows="2" placeholder="VD: Hay thức khuya code, thích cà phê sữa, muốn ăn uống giữ dáng, dị ứng hải sản..." maxlength="200"></textarea>
+          </label>
+        </div>
+
+        <div class="ai-config-toggles profile-auto-learn-box">
+          <label class="ai-toggle-row">
+            <span class="rule-icon-box" aria-hidden="true">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"></path>
+              </svg>
+            </span>
+            <div class="ai-toggle-text">
+              <span class="ai-toggle-name">Tự động học khi trò chuyện</span>
+              <span class="ai-toggle-desc">Tự ghi nhớ khi bạn nói tuổi, chiều cao, cân nặng, nơi ở trong lúc chat</span>
+            </div>
+            <span class="ios-switch">
+              <input type="checkbox" id="profAutoLearnToggle" checked>
+              <span class="switch-slider"></span>
+            </span>
+          </label>
+        </div>
+
+        <div class="profile-footer-actions">
+          <span id="profileSaveStatus" class="profile-save-status">Đã đồng bộ với bộ nhớ Wisp</span>
+          <button type="button" id="saveProfileBtn" class="profile-save-btn">Lưu hồ sơ</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cụm 3: Chọn nhanh Giọng đọc & Nghe thử -->
+    <div class="voice-picker toolbar-audio-group" title="Chọn Giọng đọc Tiếng Việt Neural & Nghe thử">
+      <div class="select-field-wrap" title="Chọn giọng đọc Tiếng Việt Neural">
+        <!-- Iconsax: volume-high -->
+        <svg class="isax voice-picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 10V14C2 16 3 17 5 17H6.43C6.8 17 7.17 17.11 7.49 17.3L10.41 19.13C12.93 20.71 15 19.56 15 16.59V7.41C15 4.43 12.93 3.29 10.41 4.87L7.49 6.7C7.17 6.89 6.8 7 6.43 7H5C3 7 2 8 2 10Z"></path>
+          <path d="M18 8C19.78 10.37 19.78 13.63 18 16"></path>
+          <path d="M19.83 5.5C22.72 9.35 22.72 14.65 19.83 18.5"></path>
+        </svg>
+        <select id="voiceSelect" class="voice-select" aria-label="Chọn giọng đọc Tiếng Việt">
+          <option value="hoaimy">Linh Đan · Nữ Podcast</option>
+          <option value="namminh">Minh Khôi · Nam Podcast</option>
+          <option value="hoaimy_fast">Breeze · Nữ Tự nhiên</option>
+          <option value="namminh_deep">Cove · Nam Trầm ấm</option>
+          <option value="ava_multilingual">Ava · Song ngữ AI</option>
+        </select>
+        <svg class="isax select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M19.92 8.95L13.4 15.47C12.63 16.24 11.37 16.24 10.6 15.47L4.08 8.95"></path>
+        </svg>
+      </div>
+
+      <button type="button" id="voicePreviewBtn" class="voice-preview-btn" title="Nghe thử giọng đọc này" aria-label="Nghe thử giọng đọc">
+        <!-- Iconsax: play -->
+        <svg class="isax" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 12V8.44C4 4.02 7.13 2.21 10.96 4.42L14.05 6.2L17.14 7.98C20.97 10.19 20.97 13.81 17.14 16.02L14.05 17.8L10.96 19.58C7.13 21.79 4 19.98 4 15.56V12Z"></path>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Cụm 4: Nút Tùy chỉnh Trợ lý (Gộp Phong cách AI + Tốc độ nói + Độ nhạy Mic vào 1 Control Center gọn gàng) -->
+    <div class="ai-config-wrap" id="aiConfigWrap">
+      <!-- Giữ #aiStyleSelect ẩn để đồng bộ 100% logic cũ mà không làm chật thanh công cụ -->
+      <div id="aiStyleIconWrap" data-style-icon="balanced" hidden>
+        <select id="aiStyleSelect" aria-hidden="true" tabindex="-1">
+          <option value="concise">Ngắn gọn</option>
+          <option value="balanced" selected>Tự nhiên</option>
+          <option value="detailed">Chi tiết</option>
+        </select>
+      </div>
+
+      <button type="button" id="aiConfigBtn" class="ai-config-btn assistant-control-pill" aria-expanded="false" aria-controls="aiConfigPanel" title="Tùy chỉnh Phong cách trả lời, Tốc độ nói & Độ nhạy Mic">
+        <!-- Iconsax: setting-4 -->
+        <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 6.5H16"></path>
+          <path d="M6 6.5H2"></path>
+          <path d="M10 10C11.933 10 13.5 8.433 13.5 6.5C13.5 4.567 11.933 3 10 3C8.067 3 6.5 4.567 6.5 6.5C6.5 8.433 8.067 10 10 10Z"></path>
+          <path d="M22 17.5H18"></path>
+          <path d="M8 17.5H2"></path>
+          <path d="M14 21C15.933 21 17.5 19.433 17.5 17.5C17.5 15.567 15.933 14 14 14C12.067 14 10.5 15.567 10.5 17.5C10.5 19.433 12.067 21 14 21Z"></path>
+        </svg>
+        <span id="aiStyleBtnLabel">Tự nhiên</span>
+        <span id="aiRulesBadge" class="ai-rules-badge">4</span>
+      </button>
+
+      <!-- Bảng Popover Tùy chỉnh Quy tắc Trả lời & Âm thanh chuẩn iOS Control Center -->
+      <div id="aiConfigPanel" class="ai-config-panel" role="dialog" aria-label="Tùy chỉnh phong cách trả lời AI" hidden>
+        <div class="ai-config-header">
+          <div class="ai-config-title-wrap">
+            <!-- Iconsax: setting-4 -->
+            <svg class="isax ai-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 6.5H16"></path>
+              <path d="M6 6.5H2"></path>
+              <path d="M10 10C11.933 10 13.5 8.433 13.5 6.5C13.5 4.567 11.933 3 10 3C8.067 3 6.5 4.567 6.5 6.5C6.5 8.433 8.067 10 10 10Z"></path>
+              <path d="M22 17.5H18"></path>
+              <path d="M8 17.5H2"></path>
+              <path d="M14 21C15.933 21 17.5 19.433 17.5 17.5C17.5 15.567 15.933 14 14 14C12.067 14 10.5 15.567 10.5 17.5C10.5 19.433 12.067 21 14 21Z"></path>
+            </svg>
+            <span class="ai-config-title">Tùy chỉnh Trợ lý Wisp</span>
+          </div>
+          <button type="button" id="resetAiPrefsBtn" class="ai-reset-btn" title="Khôi phục thiết lập mặc định">
+            <!-- Iconsax: refresh-2 -->
+            <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 12C22 17.52 17.52 22 12 22C6.48 22 3.11 16.44 3.11 16.44M3.11 16.44H7.63M3.11 16.44V21.44M2 12C2 6.48 6.44 2 12 2C18.67 2 22 7.56 22 7.56M22 7.56V2.56M22 7.56H17.56"></path>
+            </svg>
+            <span>Mặc định</span>
+          </button>
+        </div>
+
+        <!-- Khu vực Tốc độ nói & Độ nhạy Mic (gom từ thanh công cụ vào đây để giao diện sạch sẽ) -->
+        <div class="ai-audio-subgrid">
+          <label class="profile-field">
+            <span class="profile-field-label">Tốc độ giọng nói</span>
+            <select id="voiceSpeedSelect" class="profile-input" aria-label="Tốc độ nói">
+              <option value="0.85">0.85x · Chậm</option>
+              <option value="1.0">1.0x · Chuẩn</option>
+              <option value="1.15" selected>1.15x · Tự nhiên</option>
+              <option value="1.25">1.25x · Nhanh</option>
+              <option value="1.5">1.5x · Rất nhanh</option>
+              <option value="1.75">1.75x · Siêu tốc</option>
+            </select>
+          </label>
+          <label class="profile-field">
+            <span class="profile-field-label">Độ nhạy Microphone</span>
+            <select id="micSensitivitySelect" class="profile-input" aria-label="Độ nhạy Microphone">
+              <option value="low" selected>Lọc ồn cao</option>
+              <option value="medium">Trung bình</option>
+              <option value="high">Nhạy cao</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Segmented Control 1: Độ dài câu trả lời -->
+        <div class="ai-config-field">
+          <span class="ai-field-label">Độ dài phản hồi</span>
+          <div class="ai-segmented-control" id="styleSegmentGroup" role="group" aria-label="Độ dài phản hồi">
+            <button type="button" class="ai-segment-btn" data-style-val="concise">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6.09 13.28H9.18V20.48C9.18 22.16 10.09 22.5 11.2 21.24L18.77 12.64C19.7 11.59 19.31 10.72 17.9 10.72H14.81V3.52C14.81 1.84 13.9 1.5 12.79 2.76L5.22 11.36C4.3 12.42 4.69 13.28 6.09 13.28Z"></path>
+              </svg>
+              <span>Ngắn gọn</span>
+            </button>
+            <button type="button" class="ai-segment-btn active" data-style-val="balanced">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17.98 10.79V14.79C17.98 15.05 17.97 15.3 17.94 15.54C17.71 18.24 16.12 19.58 13.19 19.58H12.79C12.54 19.58 12.3 19.7 12.15 19.9L10.95 21.5C10.42 22.21 9.56 22.21 9.03 21.5L7.83 19.9C7.7 19.73 7.41 19.58 7.19 19.58H6.79C3.6 19.58 2 18.79 2 14.79V10.79C2 7.86 3.35 6.27 6.04 6.04C6.28 6.01 6.53 6 6.79 6H13.19C16.38 6 17.98 7.6 17.98 10.79Z"></path>
+                <path d="M21.98 6.79V10.79C21.98 13.73 20.63 15.31 17.94 15.54C17.97 15.3 17.98 15.05 17.98 14.79V10.79C17.98 7.6 16.38 6 13.19 6H6.79C6.53 6 6.28 6.01 6.04 6.04C6.27 3.35 7.86 2 10.79 2H17.19C20.38 2 21.98 3.6 21.98 6.79Z"></path>
+              </svg>
+              <span>Tự nhiên</span>
+            </button>
+            <button type="button" class="ai-segment-btn" data-style-val="detailed">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3.5 18V7C3.5 3 4.5 2 8.5 2H15.5C19.5 2 20.5 3 20.5 7V17C20.5 17.14 20.5 17.28 20.49 17.42"></path>
+                <path d="M6.35 15H20.5V18.5C20.5 20.43 18.93 22 17 22H7C5.07 22 3.5 20.43 3.5 18.5V17.85C3.5 16.28 4.78 15 6.35 15Z"></path>
+                <path d="M8 7H16"></path>
+                <path d="M8 10.5H13"></path>
+              </svg>
+              <span>Chi tiết</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Segmented Control 2: Cách xưng hô -->
+        <div class="ai-config-field">
+          <label for="aiPersonaSelect" class="ai-field-label">
+            <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9.16 10.87C9.06 10.86 8.94 10.86 8.83 10.87C6.45 10.79 4.56 8.84 4.56 6.44C4.56 3.99 6.54 2 9 2C11.45 2 13.44 3.99 13.44 6.44C13.43 8.84 11.54 10.79 9.16 10.87Z"></path>
+              <path d="M16.41 4C18.35 4 19.91 5.57 19.91 7.5C19.91 9.39 18.41 10.93 16.54 11C16.46 10.99 16.37 10.99 16.28 11"></path>
+              <path d="M4.16 14.56C1.74 16.18 1.74 18.82 4.16 20.43C6.91 22.27 11.42 22.27 14.17 20.43C16.59 18.81 16.59 16.17 14.17 14.56C11.43 12.73 6.92 12.73 4.16 14.56Z"></path>
+              <path d="M18.34 20C19.06 19.85 19.74 19.56 20.3 19.13C21.86 17.96 21.86 16.03 20.3 14.86C19.75 14.44 19.08 14.16 18.37 14"></path>
+            </svg>
+            <span>Cách xưng hô</span>
+          </label>
+          <div class="ai-segmented-control" id="personaSegmentGroup" role="group" aria-label="Chọn nhanh cách xưng hô">
+            <button type="button" class="ai-segment-btn active" data-persona-val="minh_nguyen">Mình – Bạn</button>
+            <button type="button" class="ai-segment-btn" data-persona-val="em_anh">Em – Anh</button>
+            <button type="button" class="ai-segment-btn" data-persona-val="direct">Trực tiếp</button>
+          </div>
+          <select id="aiPersonaSelect" class="ai-persona-select" hidden aria-hidden="true">
+            <option value="minh_nguyen" selected>Mình – Bạn (Thân thiện)</option>
+            <option value="em_anh">Em – Anh (Lễ phép)</option>
+            <option value="direct">Trực tiếp (Không dùng đại từ xưng hô)</option>
+          </select>
+        </div>
+
+        <div class="ai-config-toggles">
+          <label class="ai-toggle-row">
+            <span class="rule-icon-box" aria-hidden="true">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 2H8C4 2 2 4 2 8V21C2 21.55 2.45 22 3 22H16C20 22 22 20 22 16V8C22 4 20 2 16 2Z"></path>
+                <path d="M8.5 12H15.5"></path>
+              </svg>
+            </span>
+            <div class="ai-toggle-text">
+              <span class="ai-toggle-name">Bỏ chào hỏi đầu câu</span>
+              <span class="ai-toggle-desc">Cắt bỏ "Chào bạn", "Dạ vâng" — vào thẳng đáp án</span>
+            </div>
+            <span class="ios-switch">
+              <input type="checkbox" id="prefNoGreeting" checked>
+              <span class="switch-slider"></span>
+            </span>
+          </label>
+
+          <label class="ai-toggle-row">
+            <span class="rule-icon-box" aria-hidden="true">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.49 2.23L5.5 4.11C4.35 4.54 3.41 5.9 3.41 7.12V14.55C3.41 15.73 4.19 17.28 5.14 17.99L9.44 21.2C10.85 22.26 13.17 22.26 14.58 21.2L18.88 17.99C19.83 17.28 20.61 15.73 20.61 14.55V7.12C20.61 5.89 19.67 4.53 18.52 4.1L13.53 2.23C12.68 1.92 11.32 1.92 10.49 2.23Z"></path>
+                <path d="M9.05 11.87L10.66 13.48L14.96 9.18"></path>
+              </svg>
+            </span>
+            <div class="ai-toggle-text">
+              <span class="ai-toggle-name">Bỏ xin lỗi & tự xưng AI</span>
+              <span class="ai-toggle-desc">Không nói "Xin lỗi vì...", "Là một trợ lý AI..."</span>
+            </div>
+            <span class="ios-switch">
+              <input type="checkbox" id="prefNoApology" checked>
+              <span class="switch-slider"></span>
+            </span>
+          </label>
+
+          <label class="ai-toggle-row">
+            <span class="rule-icon-box" aria-hidden="true">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5.5 10C7.43 10 9 8.43 9 6.5C9 4.57 7.43 3 5.5 3C3.57 3 2 4.57 2 6.5C2 8.43 3.57 10 5.5 10Z"></path>
+                <path d="M5.5 21C7.43 21 9 19.43 9 17.5C9 15.57 7.43 14 5.5 14C3.57 14 2 15.57 2 17.5C2 19.43 3.57 21 5.5 21Z"></path>
+                <path d="M22 6L8.65 15.98"></path>
+                <path d="M22 17.97L8.65 7.98"></path>
+              </svg>
+            </span>
+            <div class="ai-toggle-text">
+              <span class="ai-toggle-name">Bỏ câu chúc & câu hỏi đuôi</span>
+              <span class="ai-toggle-desc">Không kết thúc bằng "Chúc vui vẻ", "Cần giúp gì thêm?"</span>
+            </div>
+            <span class="ios-switch">
+              <input type="checkbox" id="prefNoOutro" checked>
+              <span class="switch-slider"></span>
+            </span>
+          </label>
+
+          <label class="ai-toggle-row">
+            <span class="rule-icon-box" aria-hidden="true">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 10L6 12L8 14"></path>
+                <path d="M16 10L18 12L16 14"></path>
+                <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"></path>
+                <path d="M13 9.67L11 14.33"></path>
+              </svg>
+            </span>
+            <div class="ai-toggle-text">
+              <span class="ai-toggle-name">Chế độ Code-First</span>
+              <span class="ai-toggle-desc">Khi hỏi lập trình, đưa khối code hoàn chỉnh lên đầu tiên</span>
+            </div>
+            <span class="ios-switch">
+              <input type="checkbox" id="prefCodeFirst" checked>
+              <span class="switch-slider"></span>
+            </span>
+          </label>
+
+          <label class="ai-toggle-row">
+            <span class="rule-icon-box" aria-hidden="true">
+              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 10V15C22 20 20 22 15 22H9C4 22 2 20 2 15V9C2 4 4 2 9 2H14"></path>
+                <path d="M22 10H18C15 10 14 9 14 6V2L22 10Z"></path>
+                <path d="M7 13H13"></path>
+                <path d="M7 17H11"></path>
+              </svg>
+            </span>
+            <div class="ai-toggle-text">
+              <span class="ai-toggle-name">Văn bản thuần (Tắt Emoji & Bullet)</span>
+              <span class="ai-toggle-desc">Viết câu liền mạch, không biểu tượng cảm xúc hay gạch dòng</span>
+            </div>
+            <span class="ios-switch">
+              <input type="checkbox" id="prefPlainText">
+              <span class="switch-slider"></span>
+            </span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast thông báo khi Trợ lý tự động ghi nhớ thông tin cá nhân mới -->
+  <div id="assistantMemoryToast" class="assistant-memory-toast" role="status" aria-live="polite" hidden>
+    <span class="toast-sparkle">✨</span>
+    <span id="assistantMemoryToastText">Wisp đã ghi nhớ vào Hồ sơ của bạn</span>
+  </div>
+
+  <!-- Nút đổi giao diện Sáng / Tối ở góc phải trên (Iconsax: sun-1 / moon) -->
   <button type="button" id="themeToggleBtn" class="theme-corner-btn" title="Đổi giao diện Sáng / Tối" aria-label="Đổi giao diện Sáng / Tối">
-    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="4"></circle>
-      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+    <svg class="isax icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 18.5C15.59 18.5 18.5 15.59 18.5 12C18.5 8.41 15.59 5.5 12 5.5C8.41 5.5 5.5 8.41 5.5 12C5.5 15.59 8.41 18.5 12 18.5Z"></path>
+      <path d="M19.14 19.14L19.01 19.01M19.01 4.99L19.14 4.86L19.01 4.99ZM4.86 19.14L4.99 19.01L4.86 19.14ZM12 2.08V2V2.08ZM12 22V21.92V22ZM2.08 12H2H2.08ZM22 12H21.92H22ZM4.99 4.99L4.86 4.86L4.99 4.99Z"></path>
     </svg>
-    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+    <svg class="isax icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2.03 12.42C2.39 17.57 6.76 21.76 11.99 21.99C15.68 22.15 18.98 20.43 20.96 17.72C21.78 16.61 21.34 15.87 19.97 16.12C19.3 16.24 18.61 16.29 17.89 16.26C13.00 16.06 9.00 11.97 8.98 7.14C8.97 5.84 9.24 4.61 9.73 3.49C10.27 2.25 9.62 1.66 8.37 2.19C4.41 3.86 1.70 7.85 2.03 12.42Z"></path>
     </svg>
   </button>
 
   <div class="split-layout" id="appLayout" data-mode="chat">
-    <!-- CỘT TRÁI (HOẶC TOÀN MÀN HÌNH KHI Ở CHẾ ĐỘ NÓI): THINKING ORB CỦA WISP -->
+    <!-- CỘT TRÁI (TRƯỢT RA KHI Ở CHẾ ĐỘ NÓI): KHUNG CHAT RIÊNG CHO GIỌNG NÓI -->
+    <section class="voice-chat-pane" id="voiceChatPane" aria-label="Khung hội thoại giọng nói">
+      <div id="voiceChat" class="chat-messages voice-chat-messages" aria-live="polite"></div>
+
+      <div class="composer-wrapper voice-controls-wrapper">
+        <footer class="voice-control-bar">
+          <button type="button" id="voiceMicToggleBtn" class="voice-mic-pill" title="Bấm để Tạm dừng hoặc Bật lại Microphone">
+            <span class="mic-live-dot" id="voiceMicDot"></span>
+            <span id="voiceMicStatusLabel">Đang lắng nghe · Chạm để tạm dừng</span>
+          </button>
+          <button type="button" id="clearVoiceChatBtn" class="voice-clear-btn" title="Xóa lịch sử hội thoại giọng nói">
+            <!-- Iconsax: trash -->
+            <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 5.98C17.67 5.65 14.32 5.48 10.98 5.48C9 5.48 7.02 5.58 5.04 5.78L3 5.98"></path>
+              <path d="M8.5 4.97L8.72 3.66C8.88 2.71 9 2 10.69 2H13.31C15 2 15.13 2.75 15.28 3.67L15.5 4.97"></path>
+              <path d="M18.85 9.14L18.2 19.21C18.09 20.78 18 22 15.21 22H8.79C6 22 5.91 20.78 5.8 19.21L5.15 9.14"></path>
+              <path d="M10.33 16.5H13.66"></path>
+              <path d="M9.5 12.5H14.5"></path>
+            </svg>
+            <span>Xóa lịch sử nói</span>
+          </button>
+        </footer>
+      </div>
+    </section>
+
+    <!-- CỘT GIỮA/QUẢ CẦU (50% TRÁI KHI CHAT, TRƯỢT SANG 50% PHẢI KHI Ở CHẾ ĐỘ NÓI): THINKING ORB CỦA WISP -->
     <aside class="orb-pane">
       <section class="orb-stage">
         <div class="orb-canvas-wrap" id="orbModeBtn" title="Bấm để đổi trạng thái của Wisp">
@@ -59,8 +473,8 @@
       </section>
     </aside>
 
-    <!-- CỘT PHẢI: KHUNG HIỂN THỊ CHAT & Ô NHẬP CHAT -->
-    <section class="chat-pane">
+    <!-- CỘT PHẢI (50% PHẢI KHI CHAT, THU GỌN KHI Ở CHẾ ĐỘ NÓI): KHUNG HIỂN THỊ CHAT VĂN BẢN & Ô NHẬP CHAT -->
+    <section class="chat-pane" id="textChatPane">
       <main id="chat" class="chat-messages" aria-live="polite"></main>
 
       <div class="composer-wrapper">
@@ -74,19 +488,27 @@
             autofocus
           >
           <button type="button" id="quickVoiceBtn" class="voice-quick-btn" title="Chuyển sang Chế độ Nói" aria-label="Chuyển sang Chế độ Nói">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2 10v3"></path>
-              <path d="M6 6v11"></path>
-              <path d="M10 3v18"></path>
-              <path d="M14 8v7"></path>
-              <path d="M18 5v13"></path>
-              <path d="M22 10v3"></path>
+            <!-- Iconsax: audio-square -->
+            <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 22H15C20 22 22 20 22 15V9C22 4 20 2 15 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22Z"></path>
+              <path d="M6 9.86V14.15"></path>
+              <path d="M9 8.43V15.57"></path>
+              <path d="M12 7V17"></path>
+              <path d="M15 8.43V15.57"></path>
+              <path d="M18 9.86V14.15"></path>
             </svg>
           </button>
-          <button type="button" id="sendBtn" class="send-btn" aria-label="Gửi">
-            <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 19V5"></path>
-              <path d="m5 12 7-7 7 7"></path>
+          <button type="button" id="sendBtn" class="send-btn" aria-label="Gửi" title="Gửi tin nhắn">
+            <!-- Iconsax: send-2 -->
+            <svg class="isax send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M7.4 6.32L15.89 3.49C19.7 2.22 21.77 4.3 20.51 8.11L17.68 16.6C15.78 22.31 12.66 22.31 10.76 16.6L9.92 14.08L7.4 13.24C1.69 11.34 1.69 8.23 7.4 6.32Z"></path>
+              <path d="M10.11 13.65L13.69 10.06"></path>
+            </svg>
+          </button>
+          <button type="button" id="stopBtn" class="stop-btn" style="display: none;" title="Dừng phản hồi (Esc hoặc Space)" aria-label="Dừng phản hồi">
+            <!-- Iconsax: stop -->
+            <svg class="isax stop-icon" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2.5"></rect>
             </svg>
           </button>
         </footer>
@@ -94,6 +516,6 @@
     </section>
   </div>
 
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20261017_5"></script>
 </body>
 </html>

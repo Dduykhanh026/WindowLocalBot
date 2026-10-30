@@ -28,6 +28,8 @@ CITY_ALIASES = {
     "nha trang": "Nha Trang",
     "da lat": "Da Lat",
     "vung tau": "Vung Tau",
+    "phu quoc": "Phu Quoc",
+    "con dao": "Con Dao",
     "bien hoa": "Bien Hoa",
     "binh duong": "Thu Dau Mot",
     "quy nhon": "Quy Nhon",
