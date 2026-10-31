@@ -1190,20 +1190,29 @@ html[data-theme="light"] .icon-sun {
 
 /* Nội dung tin nhắn */
 .message {
+  min-width: 0;
   font-size: 15.5px;
   line-height: 1.65;
   letter-spacing: -0.006em;
   white-space: pre-wrap;
   word-break: break-word;
+  tab-size: 4;
+}
+
+.message strong {
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .bot-message {
+  min-width: 0;
   max-width: 90%;
   padding: 2px 0;
   color: var(--text-primary);
 }
 
 .user-message {
+  min-width: 0;
   max-width: 78%;
   padding: 10px 18px;
   border-radius: 22px;
@@ -1234,6 +1243,126 @@ html[data-theme="light"] .icon-sun {
 .inline-code:hover {
   background: var(--bg-hover);
   border-color: var(--border-strong);
+}
+
+/* Khối mã nguồn định dạng chuẩn IDE (<pre class="code-block">) kèm thanh tiêu đề & nút Sao chép */
+.message pre,
+.code-block {
+  max-width: 100%;
+  margin: 10px 0;
+  border-radius: 14px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+  white-space: normal;
+  word-break: normal;
+  box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.32);
+}
+
+html[data-theme="light"] .message pre,
+html[data-theme="light"] .code-block {
+  box-shadow: 0 4px 14px -6px rgba(15, 23, 42, 0.08);
+}
+
+.code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 14px;
+  background-color: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: normal;
+  user-select: none;
+}
+
+.code-lang {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.copy-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.copy-btn.copied {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+html[data-theme="light"] .copy-btn.copied {
+  color: #059669;
+  border-color: rgba(5, 150, 105, 0.35);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.message pre > code,
+.code-block > code {
+  display: block;
+  padding: 13px 16px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 13.5px;
+  line-height: 1.56;
+  color: var(--text-primary);
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 4;
+  user-select: text;
+  cursor: text;
+}
+
+.message pre > code::-webkit-scrollbar,
+.code-block > code::-webkit-scrollbar {
+  height: 6px;
+}
+
+.message pre > code::-webkit-scrollbar-thumb,
+.code-block > code::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
+
+.clear-history-pill {
+  padding: 0 12px 0 10px;
+  color: var(--text-secondary);
+}
+
+.clear-history-pill svg {
+  width: 14px;
+  height: 14px;
+}
+
+.clear-history-pill:hover {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.38);
+}
+
+html[data-theme="light"] .clear-history-pill:hover {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.35);
 }
 
 /* Cụm Composer nổi ở đáy cột phải & Thanh điều khiển giọng nói ở đáy cột trái */
@@ -1319,11 +1448,11 @@ html[data-theme="light"] .icon-sun {
 
 .chat-input-area {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
   padding: 8px 10px 8px 20px;
   background-color: var(--bg-surface);
-  border-radius: 28px;
+  border-radius: 26px;
   box-shadow: var(--composer-shadow);
   transition: box-shadow 0.2s ease, background-color 0.2s ease;
 }
@@ -1336,14 +1465,28 @@ html[data-theme="light"] .icon-sun {
 .chat-input {
   flex: 1;
   min-width: 0;
+  min-height: 36px;
+  max-height: 120px;
+  resize: none;
+  overflow-y: auto;
   font-family: inherit;
   font-size: 15.5px;
   line-height: 1.5;
+  tab-size: 4;
   color: var(--text-primary);
   background: transparent;
   border: none;
   padding: 6px 0;
   outline: none;
+}
+
+.chat-input::-webkit-scrollbar {
+  width: 5px;
+}
+
+.chat-input::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 999px;
 }
 
 .chat-input::placeholder {
@@ -1508,5 +1651,15 @@ html[data-theme="light"] .icon-sun {
 
   .composer-wrapper {
     padding: 8px 16px 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .clear-history-pill {
+    padding: 0 9px;
+  }
+
+  .clear-history-pill span {
+    display: none;
   }
 }

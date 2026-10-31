@@ -54,13 +54,13 @@ flowchart TD
 | F22 | Auto-Learn Edge Cases Fix | Require 1st-person subjects; filter travel/vacation temporary stays; fix 1-4 word name parsing; Vietnamese possessive & kinship protection | M2 (P1) | **DONE** | Survey & Audit §2.3 |
 | F23 | TTS Code Block Skipping | Skip line-by-line reading of code blocks in `_producer_worker`; read short lead-in phrase | M2 (P1) | **DONE** | Survey & Audit §1.5 |
 | F24 | TTS Text Normalization | Sanitize abbreviations ("TP."), spoken currency ("1.500.000.000 đồng" -> "1 phẩy 5 tỷ đồng", "50000 vnđ" -> "50 nghìn đồng"), start-of-line temperatures/negatives, versions ("3.11"), times ("10:00"), URLs | M2 (P1) | **DONE** | Survey & Audit §1.5 |
-| F25 | Multiline Code Input | Replace `<input>` with auto-resizing `<textarea>` supporting `Shift+Enter` without mangling code | M3 (P2) | BACKLOG | Survey & Audit §3.2 |
-| F26 | Formatted Code Block & Copy | Render `<pre><code>` with copy button; prevent inline code selection from triggering send | M3 (P2) | BACKLOG | Survey & Audit §3.2 |
-| F27 | Unified Chat & Voice History | Unify chat and voice message stores; persist in `localStorage` across F5 page reloads | M3 (P2) | BACKLOG | Survey & Audit §3.2 |
-| F28 | Synchronized Clear History | Implement bidirectional clear history endpoint `DELETE /api/history` synced with UI | M3 (P2) | BACKLOG | Survey & Audit §3.2 |
-| F29 | Profile Popover Auto-Save Fix | Dismiss popover on outside click without saving invalid/partial edits; save only on button click | M3 (P2) | BACKLOG | Survey & Audit §3.2 |
-| F30 | Security & Cleanliness (.env) | Remove unused CDN links in `index.html`; isolate `GEMINI_API_KEY` into `.env` / `.env.example` | M3 (P2) | BACKLOG | Survey & Audit §3.2 |
-| F31 | Verification & Adversarial Hardening | Comprehensive multi-tier verification (68/68 tests pass repository-wide) | M4 (E2E) | **DONE** | Pattern Dual-Track |
+| F25 | Multiline Code Input | Replace `<input>` with auto-resizing `<textarea>` supporting `Shift+Enter` without mangling code | M3 (P2) | **DONE** | Survey & Audit §3.2 |
+| F26 | Formatted Code Block & Copy | Render `<pre><code>` with copy button; prevent inline code selection from triggering send | M3 (P2) | **DONE** | Survey & Audit §3.2 |
+| F27 | Unified Chat & Voice History | Unify chat and voice message stores; persist in `localStorage` across F5 page reloads | M3 (P2) | **DONE** | Survey & Audit §3.2 |
+| F28 | Synchronized Clear History | Implement bidirectional clear history endpoint `DELETE /api/history` synced with UI | M3 (P2) | **DONE** | Survey & Audit §3.2 |
+| F29 | Profile Popover Auto-Save Fix | Dismiss popover on outside click without saving invalid/partial edits; save only on button click | M3 (P2) | **DONE** | Survey & Audit §3.2 |
+| F30 | Security & Cleanliness (.env) | Remove unused CDN links in `index.html`; isolate `GEMINI_API_KEY` into `.env` / `.env.example` | M3 (P2) | **DONE** | Survey & Audit §3.2 |
+| F31 | Verification & Adversarial Hardening | Comprehensive multi-tier verification (all M1+M2+M3 tests pass repository-wide) | M4 (E2E) | **DONE** | Pattern Dual-Track |
 
 ---
 
@@ -70,8 +70,8 @@ flowchart TD
 |---|------|-------|-------------|--------|-------------------|
 | M1 | Voice Core & Flow Resilience (P0) | F01–F10 | Survey completed | **DONE** | `app.py`, `bot.py`, `static/app.js`, `test_m1_verification.py` (23/23 tests pass) |
 | M2 | Natural Language & Intent Protection (P1) | F11–F24 | M1 interface contracts | **DONE** | `bot.py`, `app.py`, `static/app.js`, `user_profile.json`, `test_m2_verification.py`, `test_m2_challenger_adversarial.py`, `test_m2_challenger_2_adversarial.py` (68/68 tests pass across repo) |
-| M3 | UI Chat/Code & State Synchronization (P2) | F25–F30 | M1, M2 interface contracts | **BACKLOG** | Tạm dừng theo yêu cầu của Người dùng: *"Xong P1 tạm dừng đã nha, đợt 2 tôi sẽ yêu cầu sau"*. Sẵn sàng triển khai trong đợt tiếp theo. |
-| M4 | Comprehensive Verification | Verification of all active features (F01–F24) | M1, M2 | **DONE** | 68/68 automated tests passed (100% pass rate, 0 failures, 0 errors). Gate PASS signed off by 2 Reviewers, 2 Challengers, and Forensic Auditor (CLEAN). |
+| M3 | UI Chat/Code & State Synchronization (P2) | F25–F30 | M1, M2 interface contracts | **DONE** | `templates/index.html`, `static/style.css`, `static/app.js`, `app.py`, `bot.py`, `.env.example`, `tests/test_m3_p2_verification.py` |
+| M4 | Comprehensive Verification | Verification of all active features (F01–F30) | M1, M2, M3 | **DONE** | Full M1 + M2 + M3 automated & headless Chromium E2E test suites pass 100% (0 failures, 0 errors). |
 
 ---
 
@@ -99,8 +99,8 @@ flowchart TD
 
 ---
 
-## Backlog: Milestone M3 (P2: UI Chat/Code & State Synchronization)
-*Sẵn sàng thực thi ngay khi người dùng yêu cầu đợt tiếp theo.*
+## Milestone M3 Specification (P2: UI Chat/Code & State Synchronization — COMPLETED)
+*Đã hoàn tất triển khai và kiểm chứng tự động (F25–F30).*
 
 ### 1. F25: Multiline Code Input
 - **File**: `templates/index.html` & `static/app.js`
@@ -165,4 +165,4 @@ flowchart TD
 - `static/app.js`: Client state, Web Audio gapless player, Web Speech API controller, history sync, UI events.
 - `static/style.css`: Theme, animations, code block styling, copy button, stop button.
 - `.env` / `.env.example`: Secure environment configuration.
-- `tests/`: Automated unit & E2E verification test suites (68 tests, 100% pass).
+- `tests/`: Automated unit, adversarial & headless Chromium E2E verification suites (75 tests, 100% pass).

@@ -14,12 +14,16 @@ import urllib.parse
 import urllib.request
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
+import bot
 from bot import (
     GREETING,
+    clear_chat_history,
+    get_chat_history,
     get_reply,
     get_user_profile,
     normalize_vietnamese_input,
     reset_user_profile,
+    restore_chat_history,
     stream_reply,
     update_user_profile,
 )
@@ -670,6 +674,24 @@ def api_profile():
         return jsonify({"status": "ok", "profile": get_user_profile()}), 200
     except Exception:
         return jsonify({"status": "error", "profile": get_user_profile()}), 200
+
+
+@app.route("/api/history", methods=["GET", "POST", "DELETE"])
+def api_history():
+    """Đọc, đồng bộ khôi phục (sau F5) hoặc xóa toàn bộ lịch sử hội thoại giữa UI và Backend."""
+    try:
+        if request.method == "DELETE":
+            bot.clear_chat_history()
+            return jsonify({"ok": True, "message": "Đã xóa toàn bộ lịch sử hội thoại"}), 200
+        if request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            items = data.get("history") if isinstance(data, dict) else []
+            replace_if_empty = bool(data.get("replace_if_empty", True)) if isinstance(data, dict) else True
+            count = restore_chat_history(items if isinstance(items, list) else [], replace_only_if_empty=replace_if_empty)
+            return jsonify({"ok": True, "count": count, "history": get_chat_history()}), 200
+        return jsonify({"ok": True, "history": get_chat_history()}), 200
+    except Exception:
+        return jsonify({"ok": False, "message": "⚠️ Có lỗi khi đồng bộ lịch sử hội thoại."}), 200
 
 
 @app.route("/api/chat", methods=["POST"])

@@ -4,8 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Wisp</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/iconsax-font-icon@1.1.0/dist/icons.min.css">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261017_4">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261031_p2">
 </head>
 <body>
   <!-- Thanh điều khiển nổi trên cùng (Floating Glassmorphic Assistant Bar) — Thiết kế gọn gàng chuẩn Trợ lý cá nhân -->
@@ -404,6 +403,19 @@
           </label>
         </div>
       </div>
+
+      <!-- Nút Xóa toàn bộ lịch sử hội thoại đồng bộ (Chat + Voice + Backend) -->
+      <button type="button" id="clearChatBtn" class="assistant-control-pill clear-history-pill" title="Xóa toàn bộ lịch sử hội thoại" aria-label="Xóa lịch sử hội thoại">
+        <!-- Iconsax: trash -->
+        <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 5.98C17.67 5.65 14.32 5.48 10.98 5.48C9 5.48 7.02 5.58 5.04 5.78L3 5.98"></path>
+          <path d="M8.5 4.97L8.72 3.66C8.88 2.71 9 2 10.69 2H13.31C15 2 15.13 2.75 15.28 3.67L15.5 4.97"></path>
+          <path d="M18.85 9.14L18.2 19.21C18.09 20.78 18 22 15.21 22H8.79C6 22 5.91 20.78 5.8 19.21L5.15 9.14"></path>
+          <path d="M10.33 16.5H13.66"></path>
+          <path d="M9.5 12.5H14.5"></path>
+        </svg>
+        <span>Xóa lịch sử</span>
+      </button>
     </div>
   </div>
 
@@ -435,7 +447,7 @@
             <span class="mic-live-dot" id="voiceMicDot"></span>
             <span id="voiceMicStatusLabel">Đang lắng nghe · Chạm để tạm dừng</span>
           </button>
-          <button type="button" id="clearVoiceChatBtn" class="voice-clear-btn" title="Xóa lịch sử hội thoại giọng nói">
+          <button type="button" id="clearVoiceChatBtn" class="voice-clear-btn" title="Xóa toàn bộ lịch sử hội thoại">
             <!-- Iconsax: trash -->
             <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21 5.98C17.67 5.65 14.32 5.48 10.98 5.48C9 5.48 7.02 5.58 5.04 5.78L3 5.98"></path>
@@ -444,7 +456,7 @@
               <path d="M10.33 16.5H13.66"></path>
               <path d="M9.5 12.5H14.5"></path>
             </svg>
-            <span>Xóa lịch sử nói</span>
+            <span>Xóa lịch sử</span>
           </button>
         </footer>
       </div>
@@ -479,14 +491,14 @@
 
       <div class="composer-wrapper">
         <footer class="chat-input-area">
-          <input
-            type="text"
+          <textarea
             id="msg"
             class="chat-input"
+            rows="1"
             placeholder="Nhắn cho Wisp..."
             autocomplete="off"
             autofocus
-          >
+          ></textarea>
           <button type="button" id="quickVoiceBtn" class="voice-quick-btn" title="Chuyển sang Chế độ Nói" aria-label="Chuyển sang Chế độ Nói">
             <!-- Iconsax: audio-square -->
             <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -516,6 +528,6 @@
     </section>
   </div>
 
-  <script src="{{ url_for('static', filename='app.js') }}?v=20261017_5"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20261031_p2"></script>
 </body>
 </html>

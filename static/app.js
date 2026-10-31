@@ -790,6 +790,7 @@ const voiceMicToggleBtn = document.getElementById("voiceMicToggleBtn");
 const voiceMicDot = document.getElementById("voiceMicDot");
 const voiceMicStatusLabel = document.getElementById("voiceMicStatusLabel");
 const clearVoiceChatBtn = document.getElementById("clearVoiceChatBtn");
+const clearChatBtn = document.getElementById("clearChatBtn");
 
 const chatEl = document.getElementById("chat");
 const msgInput = document.getElementById("msg");
@@ -1080,14 +1081,40 @@ if (profHeightInput || profWeightInput) {
   if (profWeightInput) profWeightInput.addEventListener("input", onBodyMetricInput);
 }
 
+function revertUserProfileFormInputs() {
+  const p = currentUserProfile;
+  if (profNameInput) profNameInput.value = p.name || "";
+  if (profGenderInput) profGenderInput.value = p.gender || "Nam";
+  if (profAgeInput) profAgeInput.value = p.age || "";
+  if (profHeightInput) profHeightInput.value = p.height_cm || "";
+  if (profWeightInput) profWeightInput.value = p.weight_kg || "";
+  if (profCityInput) profCityInput.value = p.city || "";
+  if (profJobInput) profJobInput.value = p.job || "";
+  if (profNotesInput) profNotesInput.value = p.notes || "";
+  if (profAutoLearnToggle) profAutoLearnToggle.checked = p.auto_learn !== false;
+  updateLiveBmiCard(p.height_cm, p.weight_kg);
+  if (profileSaveStatusEl) {
+    profileSaveStatusEl.textContent = "Đã đồng bộ với bộ nhớ Wisp";
+  }
+}
+
+function closeUserProfilePanel(shouldRevert = true) {
+  if (!userProfilePanel) return;
+  userProfilePanel.classList.remove("active");
+  userProfilePanel.setAttribute("hidden", "");
+  if (userProfileBtn) {
+    userProfileBtn.setAttribute("aria-expanded", "false");
+  }
+  if (shouldRevert) {
+    revertUserProfileFormInputs();
+  }
+}
+
 if (saveProfileBtn) {
   saveProfileBtn.addEventListener("click", async () => {
     await saveUserProfileToServer();
     showAssistantMemoryToast(`✨ Đã cập nhật Hồ sơ của ${currentUserProfile.name || "bạn"}`);
-    if (userProfilePanel && userProfileBtn) {
-      userProfilePanel.setAttribute("hidden", "");
-      userProfileBtn.setAttribute("aria-expanded", "false");
-    }
+    closeUserProfilePanel(false);
   });
 }
 
@@ -1100,10 +1127,12 @@ if (resetProfileBtn) {
         if (data && data.profile) {
           localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(data.profile));
           syncUserProfileUI(data.profile);
+          revertUserProfileFormInputs();
         }
       }
     } catch (_e) {
       syncUserProfileUI(DEFAULT_USER_PROFILE);
+      revertUserProfileFormInputs();
     }
   });
 }
@@ -1117,19 +1146,18 @@ if (userProfileBtn && userProfilePanel) {
         aiConfigPanel.setAttribute("hidden", "");
         if (aiConfigBtn) aiConfigBtn.setAttribute("aria-expanded", "false");
       }
+      revertUserProfileFormInputs();
       userProfilePanel.removeAttribute("hidden");
+      userProfilePanel.classList.add("active");
       userProfileBtn.setAttribute("aria-expanded", "true");
     } else {
-      userProfilePanel.setAttribute("hidden", "");
-      userProfileBtn.setAttribute("aria-expanded", "false");
+      closeUserProfilePanel(true);
     }
   });
 
   document.addEventListener("click", (e) => {
     if (!userProfilePanel.hasAttribute("hidden") && userProfileWrap && !userProfileWrap.contains(e.target)) {
-      userProfilePanel.setAttribute("hidden", "");
-      userProfileBtn.setAttribute("aria-expanded", "false");
-      saveUserProfileToServer();
+      closeUserProfilePanel(true);
     }
   });
 }
@@ -1202,8 +1230,7 @@ if (aiConfigBtn && aiConfigPanel) {
     const isHidden = aiConfigPanel.hasAttribute("hidden");
     if (isHidden) {
       if (userProfilePanel && !userProfilePanel.hasAttribute("hidden")) {
-        userProfilePanel.setAttribute("hidden", "");
-        if (userProfileBtn) userProfileBtn.setAttribute("aria-expanded", "false");
+        closeUserProfilePanel(true);
       }
       aiConfigPanel.removeAttribute("hidden");
       aiConfigBtn.setAttribute("aria-expanded", "true");
@@ -1310,9 +1337,19 @@ function setOrbVisualState(state, customCaption, energy = 1) {
   }
 }
 
+function stripCodeForVoiceSubtitle(text) {
+  const raw = String(text ?? "");
+  if (!raw.includes("```")) return raw;
+  const cleaned = raw
+    .replace(/(`{3,})[\s\S]*?(?:\1`*|$)/g, " [Đã hiển thị mã nguồn trên khung chat] ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "Đã hiển thị mã nguồn trên khung chat.";
+}
+
 function setVoiceSubtitle(text, isMuted = false) {
   if (!voiceTranscriptEl) return;
-  voiceTranscriptEl.textContent = text;
+  voiceTranscriptEl.textContent = stripCodeForVoiceSubtitle(text);
   voiceTranscriptEl.classList.toggle("muted", Boolean(isMuted));
 }
 
@@ -1396,14 +1433,78 @@ const CLIENT_ACCENT_RESTORE_RULES = [
   [/(?<![\p{L}\p{N}_])da lat(?![\p{L}\p{N}_])/giu, "Đà Lạt"],
 ];
 
-function normalizeVietnameseClientInput(rawText) {
-  if (!rawText) return "";
-  let s = String(rawText).normalize("NFC");
-  s = s.replace(/Ð/g, "Đ").replace(/ð/g, "đ");
-  s = s.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, " ");
-  s = s.replace(/\s+/g, " ").trim();
-  if (!s) return "";
+const CLIENT_CODE_SEGMENT_RE = /(`{3,})[\s\S]*?(?:\1`*|$)|``(?:(?!``)[^\n])+``|`[^`\n]+`/g;
 
+const CLIENT_LIKELY_CODE_LINE_RE = new RegExp(
+  "^\\s*(?:let|var|const|func|function|def|class|struct|enum|extension|protocol|interface|type|typedef|" +
+    "import|export|return|yield|elif|else|switch|case|guard|async|await|try|catch|finally|throw|throws|" +
+    "public|private|protected|internal|fileprivate|static|final|override|mutating|void|int|double|float|bool|" +
+    "String|Widget|State|BuildContext|@[A-Za-z_]\\w*|//|/\\*|\\*/|\\*\\s|#include|#define|#pragma)\\b|" +
+    "^\\s*(?:if|for|while)\\b(?=.*(?:[\\x28\\x7B:=<>!]|->|=>))|" +
+    "^\\s*[\"'][A-Za-z0-9_.-]+[\"']\\s*:|" +
+    "^\\s*</?[A-Za-z][A-Za-z0-9_.-]*(?:\\s|>|/>)|" +
+    "[\\x7B\\x7D]|=>|->|===|!==|==|!=|<=|>=|\\+=|-=|\\*=|/=|:=|\\s(?:&&|\\|\\|)\\s|" +
+    ";\\s*(?://|#|$)|" +
+    "\\b[A-Za-z_][A-Za-z0-9_.]*\\s*=\\s*[^=]|" +
+    "\\b[A-Za-z_]\\w*\\.[A-Za-z_]\\w*\\x28|" +
+    "^\\s*[A-Za-z_][A-Za-z0-9_.]*\\([^()\\n]*\\)\\s*;?\\s*$"
+);
+
+const CLIENT_LIKELY_SQL_OR_CLI_RE = new RegExp(
+  "^\\s*(?:SELECT\\s+.+\\s+FROM|INSERT\\s+INTO|UPDATE\\s+\\S+\\s+SET|DELETE\\s+FROM|" +
+    "CREATE\\s+(?:TABLE|INDEX|VIEW|DATABASE)|ALTER\\s+TABLE|DROP\\s+(?:TABLE|INDEX|VIEW))\\b|" +
+    "^\\s*(?:git\\s+(?:init|clone|status|add|commit|push|pull|fetch|checkout|switch|branch|merge|rebase|reset|stash|log|diff|tag|remote|cherry-pick)|" +
+    "npm\\s+(?:install|i|run|start|test|build|init|ci|uninstall|publish|exec)|" +
+    "(?:npx|yarn|pnpm)\\s+[A-Za-z0-9_./@-]+|" +
+    "(?:pip|pip3)\\s+(?:install|uninstall|freeze|list|show)|" +
+    "(?:python|python3)\\s+(?:-[mc]\\b|\\S+\\.py\\b)|" +
+    "pytest(?:\\s|$)|" +
+    "flutter\\s+(?:run|build|pub|clean|create|test|doctor|analyze|upgrade|channel)|" +
+    "dart\\s+(?:run|compile|pub|analyze|test|fix|format)|" +
+    "swift\\s+(?:build|run|test|package)|" +
+    "docker\\s+(?:run|build|compose|ps|exec|pull|push|images|logs|stop|rm)|" +
+    "(?:cd|mkdir|rmdir|chmod|chown|curl|wget)\\s+[A-Za-z0-9_./~$-])\\b",
+  "i"
+);
+
+function iterClientCodeAndProseSegments(str) {
+  const segments = [];
+  let last = 0;
+  CLIENT_CODE_SEGMENT_RE.lastIndex = 0;
+  let m;
+  while ((m = CLIENT_CODE_SEGMENT_RE.exec(str)) !== null) {
+    if (m.index > last) {
+      segments.push({ isCode: false, text: str.slice(last, m.index) });
+    }
+    segments.push({ isCode: true, text: m[0] });
+    last = CLIENT_CODE_SEGMENT_RE.lastIndex;
+    if (m[0].length === 0) {
+      CLIENT_CODE_SEGMENT_RE.lastIndex += 1;
+    }
+  }
+  if (last < str.length) {
+    segments.push({ isCode: false, text: str.slice(last) });
+  }
+  return segments;
+}
+
+function isLikelyClientCodeLine(line, isMultiline = false) {
+  if (!line || !line.trim()) return false;
+  if (isMultiline && /^(?: {2,}|\t+)\S/.test(line)) return true;
+  if (CLIENT_LIKELY_CODE_LINE_RE.test(line)) return true;
+  const stripped = line.trim();
+  if (!stripped.endsWith("?") && CLIENT_LIKELY_SQL_OR_CLI_RE.test(line)) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeClientProseFragment(fragment) {
+  if (!fragment) return "";
+  let s = fragment.replace(/[ \t]+/g, " ");
+  if (!s.trim()) {
+    return s.includes(" ") ? " " : "";
+  }
   // Khử cụm >= 2 từ lặp liên tiếp do ranh giới nhận diện giọng nói interim -> final (giữ nguyên từ láy đơn)
   s = s.replace(/(?<![\p{L}\p{N}_])(\S+\s+\S+)\s+\1(?![\p{L}\p{N}_])/giu, "$1");
 
@@ -1413,8 +1514,56 @@ function normalizeVietnameseClientInput(rawText) {
   for (const [pattern, replacement] of CLIENT_SHORTHAND_RULES) {
     s = s.replace(pattern, replacement);
   }
+  return s.replace(/[ \t]+/g, " ");
+}
 
-  return s.replace(/\s+/g, " ").trim();
+function normalizeVietnameseClientInput(rawText) {
+  if (!rawText) return "";
+  let s = String(rawText).normalize("NFC");
+  s = s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  s = s.replace(/Ð/g, "Đ").replace(/ð/g, "đ");
+  s = s.replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\u00A0/g, " ");
+  if (!s.trim()) return "";
+
+  s = s.replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
+  const isMultiline = s.includes("\n");
+
+  const segments = iterClientCodeAndProseSegments(s);
+  const outParts = [];
+  for (let idx = 0; idx < segments.length; idx++) {
+    const { isCode, text: part } = segments[idx];
+    if (!part) continue;
+    if (isCode) {
+      outParts.push(part);
+      continue;
+    }
+    const lines = part.split("\n");
+    const normLines = [];
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx];
+      if (isLikelyClientCodeLine(line, isMultiline)) {
+        normLines.push(line.replace(/[ \t]+$/, ""));
+      } else {
+        let normFrag = normalizeClientProseFragment(line);
+        const atLineStart = idx === 0 || lineIdx > 0;
+        const atLineEnd = idx === segments.length - 1 || lineIdx < lines.length - 1;
+        if (atLineStart) {
+          normFrag = normFrag.replace(/^[ \t]+/, "");
+        }
+        if (atLineEnd) {
+          normFrag = normFrag.replace(/[ \t]+$/, "");
+        }
+        normLines.push(normFrag);
+      }
+    }
+    outParts.push(normLines.join("\n"));
+  }
+
+  const result = outParts.join("");
+  if (!isMultiline && !result.includes("```")) {
+    return result.trim();
+  }
+  return result;
 }
 
 /**
@@ -1498,17 +1647,93 @@ function mergeSpeechSegments(existingText, newSegment) {
 }
 
 /**
- * Escape HTML để chống XSS tuyệt đối, sau đó định dạng các cụm trong dấu `...`
- * thành thẻ <code class="inline-code"> có thể bấm để gửi lệnh ngay.
+ * Escape HTML để chống XSS tuyệt đối, sau đó định dạng:
+ * - Khối mã nguồn ```lang ... ``` -> <pre class="code-block"><div class="code-header"><span class="code-lang">...</span><button type="button" class="copy-btn">Sao chép</button></div><code class="language-...">...</code></pre>
+ * - Cụm inline `...` -> <code class="inline-code">...</code>
+ * - Cụm **...** ngoài code -> <strong>...</strong>
  */
-function formatSafeMessageHtml(text) {
-  const escaped = String(text)
+function escapeHtmlText(raw) {
+  return String(raw)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-  return escaped.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
+}
+
+function formatInlineSafeMarkdown(rawSegment) {
+  const inlineParts = String(rawSegment).split(/(``(?:(?!``)[^\n])+``|`[^`\n]+`)/g);
+  return inlineParts
+    .map((piece, idx) => {
+      if (!piece) return "";
+      if (idx % 2 === 1 && piece.startsWith("`") && piece.endsWith("`")) {
+        const rawInner =
+          piece.startsWith("``") && piece.endsWith("``") && piece.length >= 4
+            ? piece.slice(2, -2).trim()
+            : piece.slice(1, -1);
+        const innerCode = escapeHtmlText(rawInner);
+        return `<code class="inline-code">${innerCode}</code>`;
+      }
+      const escaped = escapeHtmlText(piece);
+      return escaped.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    })
+    .join("");
+}
+
+function formatSafeMessageHtml(text) {
+  const src = String(text ?? "");
+  if (!src) return "";
+
+  const fenceRegex = /(`{3,})([^\n`]*)\n?([\s\S]*?)(?:\1`*|$)/g;
+  let lastIndex = 0;
+  let endedWithFence = false;
+  let html = "";
+  let match;
+
+  while ((match = fenceRegex.exec(src)) !== null) {
+    if (match.index > lastIndex) {
+      let beforeText = src.slice(lastIndex, match.index);
+      if (endedWithFence && beforeText.startsWith("\n")) {
+        beforeText = beforeText.slice(1);
+      }
+      if (beforeText.endsWith("\n")) {
+        beforeText = beforeText.slice(0, -1);
+      }
+      html += formatInlineSafeMarkdown(beforeText);
+    }
+
+    const rawLang = String(match[2] || "").trim();
+    const cleanLang = rawLang.replace(/[^A-Za-z0-9_+#.-]/g, "").toLowerCase();
+    const displayLang = cleanLang || "code";
+    const langClass = cleanLang || "plaintext";
+    const rawCodeBody = String(match[3] || "").replace(/\n$/, "");
+    const escapedCode = escapeHtmlText(rawCodeBody);
+
+    html +=
+      `<pre class="code-block">` +
+      `<div class="code-header">` +
+      `<span class="code-lang">${escapeHtmlText(displayLang)}</span>` +
+      `<button type="button" class="copy-btn" aria-label="Sao chép mã nguồn">Sao chép</button>` +
+      `</div>` +
+      `<code class="language-${escapeHtmlText(langClass)}">${escapedCode}</code>` +
+      `</pre>`;
+
+    endedWithFence = true;
+    lastIndex = fenceRegex.lastIndex;
+    if (match[0].length === 0) {
+      fenceRegex.lastIndex += 1;
+    }
+  }
+
+  if (lastIndex < src.length) {
+    let tailText = src.slice(lastIndex);
+    if (endedWithFence && tailText.startsWith("\n")) {
+      tailText = tailText.slice(1);
+    }
+    html += formatInlineSafeMarkdown(tailText);
+  }
+
+  return html;
 }
 
 function getActiveChatContainer(modeOverride) {
@@ -1586,6 +1811,189 @@ function createBotBubble(containerEl) {
 }
 
 /* ==========================================================================
+   ĐỒNG BỘ LỊCH SỬ HỘI THOẠI XUYÊN SUỐT CHAT MODE, VOICE MODE, F5 & BACKEND
+   ========================================================================== */
+
+const CHAT_HISTORY_STORAGE_KEY = "wisp_chat_history";
+const MAX_STORED_HISTORY_MESSAGES = 100;
+let chatHistoryStore = [];
+let historyEpoch = 0;
+
+function saveChatHistoryToStorage() {
+  try {
+    const validItems = chatHistoryStore.filter(
+      (item) => item && (item.role === "user" || item.role === "assistant") && String(item.content || "").trim()
+    );
+    chatHistoryStore = validItems.slice(-MAX_STORED_HISTORY_MESSAGES);
+    if (chatHistoryStore.length === 0) {
+      localStorage.removeItem(CHAT_HISTORY_STORAGE_KEY);
+    } else {
+      localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(chatHistoryStore));
+    }
+  } catch (_e) {}
+}
+
+function appendUnifiedUserTurn(text, recordInStore = true) {
+  const chatBubble = chatEl ? appendUserMessage(text, chatEl) : null;
+  const voiceBubble = voiceChatEl ? appendUserMessage(text, voiceChatEl) : null;
+  let storeIndex = -1;
+  if (recordInStore) {
+    chatHistoryStore.push({ role: "user", content: text, ts: Date.now() });
+    storeIndex = chatHistoryStore.length - 1;
+    saveChatHistoryToStorage();
+    storeIndex = chatHistoryStore.length - 1;
+  }
+  return { chatBubble, voiceBubble, storeIndex };
+}
+
+function updateUnifiedUserTurnText(userTurn, newText) {
+  if (!userTurn || !newText) return;
+  if (userTurn.chatBubble) userTurn.chatBubble.textContent = newText;
+  if (userTurn.voiceBubble) userTurn.voiceBubble.textContent = newText;
+  if (
+    typeof userTurn.storeIndex === "number" &&
+    userTurn.storeIndex >= 0 &&
+    chatHistoryStore[userTurn.storeIndex] &&
+    chatHistoryStore[userTurn.storeIndex].role === "user"
+  ) {
+    chatHistoryStore[userTurn.storeIndex].content = newText;
+    saveChatHistoryToStorage();
+  }
+}
+
+function ensureUnifiedBotTurn(existingTurn = null) {
+  if (existingTurn) return existingTurn;
+  const chatObj = chatEl ? createBotBubble(chatEl) : null;
+  const voiceObj = voiceChatEl ? createBotBubble(voiceChatEl) : null;
+  chatHistoryStore.push({ role: "assistant", content: "", ts: Date.now() });
+  const storeIndex = chatHistoryStore.length - 1;
+  return { chatObj, voiceObj, storeIndex };
+}
+
+function updateUnifiedBotTurnHtml(botTurn, fullText, persistNow = false) {
+  const turn = ensureUnifiedBotTurn(botTurn);
+  const safeHtml = formatSafeMessageHtml(fullText);
+  if (turn.chatObj && turn.chatObj.bubble) {
+    turn.chatObj.bubble.innerHTML = safeHtml;
+  }
+  if (turn.voiceObj && turn.voiceObj.bubble) {
+    turn.voiceObj.bubble.innerHTML = safeHtml;
+  }
+  if (
+    typeof turn.storeIndex === "number" &&
+    turn.storeIndex >= 0 &&
+    chatHistoryStore[turn.storeIndex] &&
+    chatHistoryStore[turn.storeIndex].role === "assistant"
+  ) {
+    chatHistoryStore[turn.storeIndex].content = fullText;
+  }
+  if (persistNow) {
+    saveChatHistoryToStorage();
+  }
+  scrollToBottom(chatEl);
+  scrollToBottom(voiceChatEl);
+  return turn;
+}
+
+function initHistory(syncBackend = true) {
+  historyEpoch += 1;
+  let loaded = [];
+  try {
+    const raw = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        loaded = parsed
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            role: item.role === "assistant" || item.role === "bot" ? "assistant" : item.role === "user" ? "user" : "",
+            content: String(item.content || ""),
+            ts: typeof item.ts === "number" ? item.ts : Date.now(),
+          }))
+          .filter((item) => (item.role === "user" || item.role === "assistant") && item.content.trim().length > 0)
+          .slice(-MAX_STORED_HISTORY_MESSAGES);
+      }
+    }
+  } catch (_e) {
+    loaded = [];
+    try {
+      localStorage.removeItem(CHAT_HISTORY_STORAGE_KEY);
+    } catch (_ignore) {}
+  }
+
+  chatHistoryStore = loaded;
+  clearVoiceDraftBubble();
+  if (chatEl) chatEl.innerHTML = "";
+  if (voiceChatEl) voiceChatEl.innerHTML = "";
+
+  for (const item of chatHistoryStore) {
+    if (item.role === "user") {
+      if (chatEl) appendUserMessage(item.content, chatEl);
+      if (voiceChatEl) appendUserMessage(item.content, voiceChatEl);
+    } else if (item.role === "assistant") {
+      const safeHtml = formatSafeMessageHtml(item.content);
+      if (chatEl) {
+        const cObj = createBotBubble(chatEl);
+        if (cObj && cObj.bubble) cObj.bubble.innerHTML = safeHtml;
+      }
+      if (voiceChatEl) {
+        const vObj = createBotBubble(voiceChatEl);
+        if (vObj && vObj.bubble) vObj.bubble.innerHTML = safeHtml;
+      }
+    }
+  }
+
+  scrollToBottom(chatEl);
+  scrollToBottom(voiceChatEl);
+
+  if (syncBackend && chatHistoryStore.length > 0) {
+    fetch("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ history: chatHistoryStore, replace_if_empty: false }),
+    }).catch(() => {});
+  }
+}
+
+window.addEventListener("storage", (e) => {
+  if (e.key === CHAT_HISTORY_STORAGE_KEY) {
+    initHistory(false);
+  }
+});
+
+function stripVietnameseAccentsForMatch(str) {
+  return String(str || "")
+    .replace(/[ĐÐ]/g, "D")
+    .replace(/[đð]/g, "d")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isClearHistoryCommand(text) {
+  const raw = String(text || "");
+  if (!raw || raw.includes("\n") || raw.includes("`")) return false;
+  let norm = stripVietnameseAccentsForMatch(raw)
+    .toLowerCase()
+    .replace(/^[\s,.?!;:"'“”‘’]+|[\s,.?!;:"'“”‘’]+$/g, "");
+  norm = norm
+    .replace(
+      /^(?:e\s+|ey\s+|alo\s+|chao\s+|xin\s+chao\s+)?(?:wisp\s+)?(?:oi\s+)?(?:cho\s+(?:minh|em|anh|to|tui)\s+(?:hoi|xem|biet)\s+|cho\s+(?:hoi|xem|biet)\s+|hoi\s+)?/,
+      ""
+    )
+    .replace(/\s+(?:nhi|vay|the|nhe|nha|di|a|ha|coi|voi|ban\s+oi|wisp\s+oi|wisp)+$/, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,.?!;:]+|[\s,.?!;:]+$/g, "");
+  return [
+    "xoa lich su",
+    "clear",
+    "reset",
+    "xoa chat",
+    "xoa hoi thoai",
+    "xoa toan bo lich su",
+  ].includes(norm);
+}
+
+/* ==========================================================================
    PHẦN 3: GIỌNG NÓI TIẾNG VIỆT NEURAL (/api/tts & INLINE STREAM) & SÓNG ÂM TRỰC TIẾP
    - Nhận trực tiếp gói âm thanh MP3 inline (`type: "audio"`) từ `/api/chat/stream` để phát TỨC THÌ (0ms trễ)
    - Phân tích phổ tần số thật (AnalyserNode) kèm bộ lọc thông dải (Band-pass) khử tạp âm nền
@@ -1655,6 +2063,8 @@ let isTTSWorkerRunning = false;
 let currentScheduledSourceNodes = [];
 let scheduledEndTime = 0;
 let currentStreamAbortController = null;
+let ttsPlaybackStartedAtMs = 0;
+let handsFreeBargeInSinceMs = 0;
 
 function stopSpeaking() {
   ttsSessionToken += 1;
@@ -1664,6 +2074,8 @@ function stopSpeaking() {
   isSpeakingTTS = false;
   ttsPulseBoost = 0;
   scheduledEndTime = 0;
+  ttsPlaybackStartedAtMs = 0;
+  handsFreeBargeInSinceMs = 0;
 
   for (const node of currentScheduledSourceNodes) {
     try {
@@ -1772,6 +2184,8 @@ function onSingleAudioNodeEnded(sourceNode) {
     isSpeakingTTS = false;
     activeUtteranceCount = 0;
     ttsPulseBoost = 0;
+    ttsPlaybackStartedAtMs = 0;
+    handsFreeBargeInSinceMs = 0;
     updateVoiceMicBarUI();
     if (!isSending) {
       syncIdleState();
@@ -1827,6 +2241,9 @@ async function playSingleAudioBlob(blob, token) {
   scheduledEndTime = nextStartTime + duration;
   currentScheduledSourceNodes.push(sourceNode);
 
+  if (!ttsPlaybackStartedAtMs) {
+    ttsPlaybackStartedAtMs = performance.now();
+  }
   isSpeakingTTS = true;
   ttsPulseBoost = 0.55;
   lastSoundDetectedMs = performance.now();
@@ -2022,7 +2439,13 @@ if (voiceSpeedSelectEl) {
     selectedVoiceSpeed = VALID_VOICE_SPEEDS.includes(val) ? val : "1.15";
     localStorage.setItem(VOICE_SPEED_KEY, selectedVoiceSpeed);
     const liveSpeed = getPlaybackRateNumber();
-    if (ttsCurrentAudio) {
+    if (currentScheduledSourceNodes.length > 0) {
+      for (const node of currentScheduledSourceNodes) {
+        try {
+          node.playbackRate.value = liveSpeed;
+        } catch (_e) {}
+      }
+    } else if (ttsCurrentAudio) {
       ttsCurrentAudio.defaultPlaybackRate = liveSpeed;
       ttsCurrentAudio.playbackRate = liveSpeed;
     } else if (!isSending) {
@@ -2037,13 +2460,53 @@ if (voicePreviewBtn) {
   });
 }
 
+const HANDS_FREE_BARGE_IN_GRACE_MS = 320;
+const HANDS_FREE_BARGE_IN_SUSTAIN_MS = 240;
+const HANDS_FREE_BARGE_IN_DELTA = 26;
+
 /**
- * Vẽ sóng âm thanh trực tiếp lên `#voiceWaveCanvas` với ngưỡng lọc tạp âm (Noise Gate) đã tinh chỉnh.
+ * Tự động ngắt lời không cần chạm (Hands-free Acoustic Voice Barge-in):
+ * Khi Wisp đang nói ở Chế độ Nói, nếu Microphone (đã bật WebRTC echoCancellation + Band-pass 140..3400Hz)
+ * thu được giọng người dùng vượt ngưỡng liên tục >= 240ms (bỏ qua 320ms đầu câu và tiếng ho/click ngắn),
+ * tự động gọi interruptCurrentInteraction() để dừng phát âm, hủy stream và bật Mic nghe ngay.
+ */
+function evaluateHandsFreeVoiceBargeIn(micVoiceAvg, micProfile, nowMs = performance.now()) {
+  const ttsActive = isSpeakingTTS || currentScheduledSourceNodes.length > 0;
+  if (currentAppMode !== "voice" || voiceMicMuted || !ttsActive) {
+    handsFreeBargeInSinceMs = 0;
+    return false;
+  }
+  if (ttsPlaybackStartedAtMs > 0 && nowMs - ttsPlaybackStartedAtMs < HANDS_FREE_BARGE_IN_GRACE_MS) {
+    handsFreeBargeInSinceMs = 0;
+    return false;
+  }
+  const baseGate = micProfile && typeof micProfile.noiseGate === "number" ? micProfile.noiseGate : 38;
+  const bargeThreshold = baseGate + HANDS_FREE_BARGE_IN_DELTA;
+  if (micVoiceAvg > bargeThreshold) {
+    if (handsFreeBargeInSinceMs <= 0) {
+      handsFreeBargeInSinceMs = nowMs;
+      return false;
+    }
+    if (nowMs - handsFreeBargeInSinceMs >= HANDS_FREE_BARGE_IN_SUSTAIN_MS) {
+      handsFreeBargeInSinceMs = 0;
+      interruptCurrentInteraction();
+      return true;
+    }
+    return false;
+  }
+  handsFreeBargeInSinceMs = 0;
+  return false;
+}
+
+/**
+ * Vẽ sóng âm thanh trực tiếp lên `#voiceWaveCanvas` với ngưỡng lọc tạp âm (Noise Gate) đã tinh chỉnh
+ * và giám sát tự ngắt lời không cần chạm khi Wisp đang nói.
  */
 function startAudioWaveVisualizer() {
   if (waveLoopRaf) return;
 
   const freqData = new Uint8Array(64);
+  const micFreqData = new Uint8Array(64);
   let phase = 0;
 
   function renderWaveLoop(now) {
@@ -2054,8 +2517,11 @@ function startAudioWaveVisualizer() {
 
     const micProfile = getMicProfile();
     let rawLevel = 0;
+    const hasActiveTtsAudio =
+      isSpeakingTTS &&
+      (currentScheduledSourceNodes.length > 0 || Boolean(ttsCurrentAudio && !ttsCurrentAudio.paused));
 
-    if (isSpeakingTTS && ttsCurrentAudio && !ttsCurrentAudio.paused) {
+    if (hasActiveTtsAudio) {
       if (ttsAnalyser) {
         ttsAnalyser.getByteFrequencyData(freqData);
         let sum = 0;
@@ -2071,6 +2537,22 @@ function startAudioWaveVisualizer() {
       }
       ttsPulseBoost *= 0.9;
       lastSoundDetectedMs = now;
+
+      // Giám sát giọng nói người dùng chen ngang không cần chạm (Hands-free Barge-in)
+      if (micAnalyser && currentAppMode === "voice" && !voiceMicMuted) {
+        micAnalyser.getByteFrequencyData(micFreqData);
+        let micSum = 0;
+        const startBin = 3;
+        const endBin = Math.min(22, micFreqData.length);
+        for (let i = startBin; i < endBin; i++) {
+          micSum += micFreqData[i];
+        }
+        const micAvg = micSum / Math.max(1, endBin - startBin);
+        if (evaluateHandsFreeVoiceBargeIn(micAvg, micProfile, now)) {
+          waveLoopRaf = requestAnimationFrame(renderWaveLoop);
+          return;
+        }
+      }
     } else if (micAnalyser && currentAppMode === "voice" && !voiceMicMuted && !isSending) {
       micAnalyser.getByteFrequencyData(freqData);
       let sum = 0;
@@ -2522,16 +3004,80 @@ function adaptOrbToLiveTokenStream(accumulatedText, tokensPerSec) {
   setOrbVisualState("composing", STATE_DESCRIPTIONS.composing, energy);
 }
 
-function renderBotMessageInstant(fullText, existingBubble = null, containerEl = null) {
-  const targetContainer = containerEl || getActiveChatContainer();
-  const target = existingBubble || createBotBubble(targetContainer);
-  if (!target) return;
-  const { bubble } = target;
-  bubble.innerHTML = formatSafeMessageHtml(fullText);
+const MSG_INPUT_MIN_HEIGHT = 36;
+const MSG_INPUT_MAX_HEIGHT = 120;
+
+function autoResizeMsgInput() {
+  if (!msgInput) return;
+  msgInput.style.height = "auto";
+  if (!msgInput.value) {
+    msgInput.style.height = `${MSG_INPUT_MIN_HEIGHT}px`;
+    msgInput.style.overflowY = "hidden";
+    return;
+  }
+  const scrollH = msgInput.scrollHeight || MSG_INPUT_MIN_HEIGHT;
+  const clamped = Math.min(MSG_INPUT_MAX_HEIGHT, Math.max(MSG_INPUT_MIN_HEIGHT, scrollH));
+  msgInput.style.height = `${clamped}px`;
+  msgInput.style.overflowY = scrollH > MSG_INPUT_MAX_HEIGHT ? "auto" : "hidden";
+}
+
+function renderBotMessageInstant(fullText, existingBotTurn = null) {
+  const turn = updateUnifiedBotTurnHtml(existingBotTurn, fullText, true);
   if (currentAppMode === "voice") {
     setVoiceSubtitle(fullText, false);
   }
-  scrollToBottom(target.container || targetContainer);
+  return turn;
+}
+
+async function clearAllConversationHistory() {
+  historyEpoch += 1;
+  if (isSending || isSpeakingTTS || isTTSWorkerRunning || currentScheduledSourceNodes.length > 0) {
+    interruptCurrentInteraction();
+  }
+  clearVoiceDraftBubble();
+  pendingVoiceDraft = "";
+  currentLiveTranscript = "";
+  chatHistoryStore = [];
+  try {
+    localStorage.removeItem(CHAT_HISTORY_STORAGE_KEY);
+  } catch (_e) {}
+
+  if (chatEl) {
+    chatEl.innerHTML = "";
+  }
+  if (voiceChatEl) {
+    voiceChatEl.innerHTML = "";
+  }
+  if (msgInput) {
+    msgInput.value = "";
+    autoResizeMsgInput();
+  }
+  prevInputLength = 0;
+  consecutiveDeletes = 0;
+
+  let serverMessage = "Đã xóa toàn bộ lịch sử hội thoại";
+  try {
+    const res = await fetch("/api/history", { method: "DELETE" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data.message === "string" && data.message.trim()) {
+        serverMessage = data.message.trim();
+      }
+    }
+  } catch (_e) {}
+
+  showAssistantMemoryToast(`🧹 ${serverMessage}`);
+  if (currentAppMode === "voice") {
+    setVoiceSubtitle(`${serverMessage}. Hãy nói gì đó với Wisp…`, true);
+    if (!voiceMicMuted) {
+      setTimeout(() => {
+        startVoiceListening();
+      }, 150);
+    }
+  } else if (msgInput) {
+    msgInput.focus();
+  }
+  syncIdleState();
 }
 
 async function sendMessage(presetText) {
@@ -2544,10 +3090,16 @@ async function sendMessage(presetText) {
     return;
   }
 
-  // Ghi nhận chế độ và khung chat đích tại thời điểm gửi (Chế độ Nói -> #voiceChat, Chế độ Chat -> #chat)
+  // Nếu người dùng gõ hoặc nói lệnh xóa lịch sử -> đồng bộ xóa cả UI (#chat + #voiceChat), localStorage và Backend
+  if (isClearHistoryCommand(message)) {
+    await clearAllConversationHistory();
+    return;
+  }
+
   const targetMode = currentAppMode;
-  const targetChatContainer = getActiveChatContainer(targetMode);
   const shouldSpeakReply = targetMode === "voice";
+  const myHistoryEpoch = historyEpoch;
+  const streamAbortController = new AbortController();
 
   clearTimeout(typingIdleTimer);
   clearTimeout(typingShapeTimer);
@@ -2556,20 +3108,23 @@ async function sendMessage(presetText) {
   stopSpeaking();
   ttsSpokenCharIndex = 0;
 
-  const userBubbleEl = appendUserMessage(message, targetChatContainer);
+  const userTurn = appendUnifiedUserTurn(message, true);
   if (targetMode === "voice") {
     setVoiceSubtitle(`“${message}”`, false);
   }
 
   if (typeof presetText !== "string" && msgInput) {
     msgInput.value = "";
+    autoResizeMsgInput();
   } else if (msgInput && normalizeVietnameseClientInput(msgInput.value) === message) {
     msgInput.value = "";
+    autoResizeMsgInput();
   }
   prevInputLength = 0;
   consecutiveDeletes = 0;
 
   isSending = true;
+  currentStreamAbortController = streamAbortController;
   updateVoiceMicBarUI();
   if (sendBtn) {
     sendBtn.disabled = true;
@@ -2581,20 +3136,19 @@ async function sendMessage(presetText) {
   }
   if (msgInput) msgInput.disabled = true;
 
-  let botBubbleObj = null;
+  let botTurn = null;
   let accumulatedText = "";
   let streamedTokenCount = 0;
   let firstTokenMs = 0;
   let receivedServerInlineAudio = false;
 
   try {
-    currentStreamAbortController = new AbortController();
     const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      signal: currentStreamAbortController.signal,
+      signal: streamAbortController.signal,
       body: JSON.stringify({
         message,
         voice: selectedVoiceId || "hoaimy",
@@ -2613,11 +3167,13 @@ async function sendMessage(presetText) {
 
     while (true) {
       const { value, done } = await reader.read();
+      if (myHistoryEpoch !== historyEpoch || streamAbortController.signal.aborted) break;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
       let newlineIdx;
       while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+        if (myHistoryEpoch !== historyEpoch || streamAbortController.signal.aborted) break;
         const line = buffer.slice(0, newlineIdx).trim();
         buffer = buffer.slice(newlineIdx + 1);
         if (!line) continue;
@@ -2630,9 +3186,7 @@ async function sendMessage(presetText) {
         }
 
         if (evt.type === "normalized" && typeof evt.text === "string" && evt.text.trim()) {
-          if (userBubbleEl) {
-            userBubbleEl.textContent = evt.text;
-          }
+          updateUnifiedUserTurnText(userTurn, evt.text);
           if (targetMode === "voice" && streamedTokenCount === 0) {
             setVoiceSubtitle(`“${evt.text}”`, false);
           }
@@ -2669,11 +3223,7 @@ async function sendMessage(presetText) {
           streamedTokenCount += 1;
           accumulatedText += evt.delta;
 
-          botBubbleObj = botBubbleObj || createBotBubble(targetChatContainer);
-          if (botBubbleObj) {
-            botBubbleObj.bubble.innerHTML = formatSafeMessageHtml(accumulatedText);
-            scrollToBottom(targetChatContainer);
-          }
+          botTurn = updateUnifiedBotTurnHtml(botTurn, accumulatedText, false);
           if (currentAppMode === "voice") {
             setVoiceSubtitle(accumulatedText, false);
           }
@@ -2685,11 +3235,7 @@ async function sendMessage(presetText) {
           if (!accumulatedText.trim() || evt.reply.length >= accumulatedText.length) {
             accumulatedText = evt.reply;
           }
-          botBubbleObj = botBubbleObj || createBotBubble(targetChatContainer);
-          if (botBubbleObj) {
-            botBubbleObj.bubble.innerHTML = formatSafeMessageHtml(accumulatedText);
-            scrollToBottom(targetChatContainer);
-          }
+          botTurn = updateUnifiedBotTurnHtml(botTurn, accumulatedText, true);
           if (currentAppMode === "voice") {
             setVoiceSubtitle(accumulatedText, false);
           }
@@ -2697,18 +3243,29 @@ async function sendMessage(presetText) {
       }
     }
 
+    if (myHistoryEpoch !== historyEpoch) {
+      return;
+    }
+    if (streamAbortController.signal.aborted) {
+      saveChatHistoryToStorage();
+      return;
+    }
+
     if (!accumulatedText.trim()) {
-      renderBotMessageInstant(FALLBACK_ERROR, botBubbleObj, targetChatContainer);
-    } else if (shouldSpeakReply && currentAppMode === "voice" && !receivedServerInlineAudio) {
-      feedStreamingTextToTTS(accumulatedText, true);
+      botTurn = renderBotMessageInstant(FALLBACK_ERROR, botTurn);
+    } else {
+      saveChatHistoryToStorage();
+      if (shouldSpeakReply && currentAppMode === "voice" && !receivedServerInlineAudio) {
+        feedStreamingTextToTTS(accumulatedText, true);
+      }
     }
   } catch (_err) {
-    if (
-      _err &&
-      (_err.name === "AbortError" ||
-        (currentStreamAbortController && currentStreamAbortController.signal.aborted))
-    ) {
-      // Bị người dùng ngắt lời (Barge-in)! Không gọi fallback /api/chat
+    if (myHistoryEpoch !== historyEpoch) {
+      return;
+    }
+    if ((_err && _err.name === "AbortError") || streamAbortController.signal.aborted) {
+      // Bị người dùng ngắt lời (Barge-in)! Lưu phần đã stream (nếu có) và không gọi fallback /api/chat
+      saveChatHistoryToStorage();
       return;
     }
     try {
@@ -2716,30 +3273,44 @@ async function sendMessage(presetText) {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: streamAbortController.signal,
         body: JSON.stringify({ message, prefs: getAiPrefs() }),
       });
+      if (myHistoryEpoch !== historyEpoch || streamAbortController.signal.aborted) {
+        return;
+      }
       const data = res.ok ? await res.json() : null;
+      if (myHistoryEpoch !== historyEpoch || streamAbortController.signal.aborted) {
+        return;
+      }
       if (data && data.profile) {
         localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(data.profile));
         syncUserProfileUI(data.profile);
       }
-      if (data && typeof data.normalized === "string" && data.normalized.trim() && userBubbleEl) {
-        userBubbleEl.textContent = data.normalized;
+      if (data && typeof data.normalized === "string" && data.normalized.trim()) {
+        updateUnifiedUserTurnText(userTurn, data.normalized);
       }
       const reply = data && typeof data.reply === "string" && data.reply.trim() ? data.reply : FALLBACK_ERROR;
       const stateForReply = currentAppMode === "voice" ? "listening" : "composing";
       setOrbVisualState(stateForReply, STATE_DESCRIPTIONS.composing, 1.15);
-      renderBotMessageInstant(reply, botBubbleObj, targetChatContainer);
+      botTurn = renderBotMessageInstant(reply, botTurn);
       if (shouldSpeakReply && currentAppMode === "voice") {
         feedStreamingTextToTTS(reply, true);
       }
     } catch (_fallbackErr) {
-      renderBotMessageInstant(FALLBACK_ERROR, botBubbleObj, targetChatContainer);
+      if (myHistoryEpoch !== historyEpoch || streamAbortController.signal.aborted) {
+        return;
+      }
+      botTurn = renderBotMessageInstant(FALLBACK_ERROR, botTurn);
     }
   }
 
   if (currentAppMode === "voice") {
     await waitForSpeechToFinish();
+  }
+
+  if (currentStreamAbortController !== streamAbortController) {
+    return;
   }
 
   isSending = false;
@@ -2768,10 +3339,12 @@ async function sendMessage(presetText) {
 }
 
 /**
- * Phản ứng thông minh theo động lực gõ phím thời gian thực của người dùng ở Chế độ Chat:
+ * Phản ứng thông minh theo động lực gõ phím thời gian thực của người dùng ở Chế độ Chat,
+ * kèm co giãn chiều cao <textarea id="msg"> (1..5 dòng, tối đa 120px), Shift+Enter xuống dòng & bảo toàn thụt lề khi Paste code.
  */
 if (msgInput) {
   msgInput.addEventListener("input", () => {
+    autoResizeMsgInput();
     if (isSending || currentAppMode !== "chat") return;
     clearTimeout(typingIdleTimer);
     clearTimeout(typingShapeTimer);
@@ -2823,8 +3396,35 @@ if (msgInput) {
     }, 2800);
   });
 
+  msgInput.addEventListener("paste", (event) => {
+    if (event.clipboardData) {
+      const pastedText = event.clipboardData.getData("text/plain");
+      if (typeof pastedText === "string" && pastedText.length > 0) {
+        event.preventDefault();
+        const normalizedPaste = pastedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        const start = typeof msgInput.selectionStart === "number" ? msgInput.selectionStart : msgInput.value.length;
+        const end = typeof msgInput.selectionEnd === "number" ? msgInput.selectionEnd : msgInput.value.length;
+        if (typeof msgInput.setRangeText === "function") {
+          msgInput.setRangeText(normalizedPaste, start, end, "end");
+        } else {
+          msgInput.value = msgInput.value.slice(0, start) + normalizedPaste + msgInput.value.slice(end);
+          msgInput.selectionStart = msgInput.selectionEnd = start + normalizedPaste.length;
+        }
+        autoResizeMsgInput();
+        msgInput.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+      }
+    }
+    setTimeout(() => {
+      autoResizeMsgInput();
+    }, 0);
+  });
+
   msgInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
+      if (event.isComposing || event.keyCode === 229) {
+        return;
+      }
       event.preventDefault();
       sendMessage();
     }
@@ -2842,8 +3442,16 @@ if (quickVoiceBtn) {
   quickVoiceBtn.addEventListener("click", () => switchAppMode("voice"));
 }
 
+function hasActiveTextSelection() {
+  if (!window.getSelection) return false;
+  const sel = window.getSelection();
+  return Boolean(sel && !sel.isCollapsed && sel.toString().trim().length > 0);
+}
+
 // Chạm vào dải sóng, quả cầu hoặc nút Mic trong Chế độ Nói để ngắt lời Wisp, gửi ngay câu vừa nói, hoặc Bật/Tạm dừng nghe
-function handleVoiceStageTap() {
+function handleVoiceStageTap(ignoreSelection = false) {
+  const bypassSelection = ignoreSelection === true;
+  if (!bypassSelection && hasActiveTextSelection()) return;
   if (currentAppMode !== "voice") return;
   if (isSending || isSpeakingTTS || isTTSWorkerRunning || currentScheduledSourceNodes.length > 0) {
     interruptCurrentInteraction();
@@ -2869,25 +3477,28 @@ function handleVoiceStageTap() {
 }
 
 if (voiceWaveWrap) {
-  voiceWaveWrap.addEventListener("click", handleVoiceStageTap);
+  voiceWaveWrap.addEventListener("click", () => handleVoiceStageTap(false));
 }
 
 if (voiceMicToggleBtn) {
-  voiceMicToggleBtn.addEventListener("click", handleVoiceStageTap);
+  voiceMicToggleBtn.addEventListener("click", () => handleVoiceStageTap(true));
 }
 
 if (clearVoiceChatBtn) {
   clearVoiceChatBtn.addEventListener("click", () => {
-    clearVoiceDraftBubble();
-    if (voiceChatEl) {
-      voiceChatEl.innerHTML = "";
-    }
-    setVoiceSubtitle("Đã xóa lịch sử khung chat nói. Hãy nói gì đó với Wisp…", true);
+    clearAllConversationHistory();
+  });
+}
+
+if (clearChatBtn) {
+  clearChatBtn.addEventListener("click", () => {
+    clearAllConversationHistory();
   });
 }
 
 if (orbModeBtn) {
   orbModeBtn.addEventListener("click", () => {
+    if (hasActiveTextSelection()) return;
     if (currentAppMode === "voice") {
       handleVoiceStageTap();
       return;
@@ -2915,9 +3526,20 @@ if (stopBtn) {
   });
 }
 
-// Bắt phím tắt Space và Escape để ngắt lời Wisp (Barge-in)
+// Bắt phím tắt Escape (đóng Popover không lưu đè hoặc Barge-in) và Space (Barge-in)
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    if (userProfilePanel && !userProfilePanel.hasAttribute("hidden")) {
+      e.preventDefault();
+      closeUserProfilePanel(true);
+      return;
+    }
+    if (aiConfigPanel && !aiConfigPanel.hasAttribute("hidden")) {
+      e.preventDefault();
+      aiConfigPanel.setAttribute("hidden", "");
+      if (aiConfigBtn) aiConfigBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
     if (isSending || isSpeakingTTS || currentScheduledSourceNodes.length > 0) {
       e.preventDefault();
       interruptCurrentInteraction();
@@ -2943,8 +3565,62 @@ if (themeToggleBtn) {
   });
 }
 
-// Bấm vào các thẻ `code` trong cả 2 khung chat (#chat và #voiceChat) để gửi lệnh ngay
-function handleInlineCodeClick(e) {
+async function copyTextToClipboard(rawText) {
+  const text = String(rawText ?? "");
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_e) {}
+  }
+  try {
+    const helper = document.createElement("textarea");
+    helper.value = text;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.top = "-9999px";
+    helper.style.opacity = "0";
+    document.body.appendChild(helper);
+    helper.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(helper);
+    return Boolean(ok);
+  } catch (_err) {
+    return false;
+  }
+}
+
+// Xử lý sự kiện click trong cả 2 khung chat (#chat và #voiceChat):
+// 1. Nút Sao chép mã nguồn (.copy-btn) -> copy vào clipboard & báo "Đã sao chép!" trong 2 giây
+// 2. Bôi đen text hoặc click trong khối <pre class="code-block"> -> tuyệt đối không gửi nhầm tin nhắn
+// 3. Click nhanh vào thẻ `.inline-code` (khi không bôi đen text) -> gửi lệnh nhanh
+async function handleChatContainerClick(e) {
+  const copyBtn = e.target.closest(".copy-btn");
+  if (copyBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const preEl = copyBtn.closest("pre, .code-block");
+    const codeEl = preEl ? preEl.querySelector("code") : null;
+    const codeText = codeEl ? codeEl.textContent : "";
+    await copyTextToClipboard(codeText);
+    clearTimeout(copyBtn._copyResetTimer);
+    copyBtn.textContent = "Đã sao chép!";
+    copyBtn.classList.add("copied");
+    copyBtn._copyResetTimer = setTimeout(() => {
+      copyBtn.textContent = "Sao chép";
+      copyBtn.classList.remove("copied");
+    }, 2000);
+    return;
+  }
+
+  if (e.target.closest("pre, .code-block")) {
+    return;
+  }
+
+  if (hasActiveTextSelection()) {
+    return;
+  }
+
   const codeEl = e.target.closest(".inline-code");
   if (codeEl && codeEl.textContent) {
     sendMessage(codeEl.textContent.trim());
@@ -2952,10 +3628,10 @@ function handleInlineCodeClick(e) {
 }
 
 if (chatEl) {
-  chatEl.addEventListener("click", handleInlineCodeClick);
+  chatEl.addEventListener("click", handleChatContainerClick);
 }
 if (voiceChatEl) {
-  voiceChatEl.addEventListener("click", handleInlineCodeClick);
+  voiceChatEl.addEventListener("click", handleChatContainerClick);
 }
 
 if (sendBtn) {
@@ -2964,7 +3640,33 @@ if (sendBtn) {
   });
 }
 
+// Khởi tạo lại mạch hội thoại từ localStorage khi tải trang / F5 & đồng bộ chiều cao ô nhập
+initHistory();
+autoResizeMsgInput();
+
 window.sendMessage = sendMessage;
 window.switchAppMode = switchAppMode;
 window.interruptCurrentInteraction = interruptCurrentInteraction;
+window.initHistory = initHistory;
+window.clearAllConversationHistory = clearAllConversationHistory;
+window.normalizeVietnameseClientInput = normalizeVietnameseClientInput;
+window.formatSafeMessageHtml = formatSafeMessageHtml;
+window.evaluateHandsFreeVoiceBargeIn = evaluateHandsFreeVoiceBargeIn;
+window.__wispVoiceDebug = {
+  setSpeakingState(speaking, startedAtMs = 0) {
+    isSpeakingTTS = Boolean(speaking);
+    ttsPlaybackStartedAtMs = Number(startedAtMs) || 0;
+    handsFreeBargeInSinceMs = 0;
+  },
+  getState() {
+    return {
+      isSpeakingTTS,
+      isSending,
+      voiceMicMuted,
+      ttsPlaybackStartedAtMs,
+      handsFreeBargeInSinceMs,
+    };
+  },
+};
+
 

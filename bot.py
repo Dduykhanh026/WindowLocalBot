@@ -23,19 +23,21 @@ try:
 except Exception:
     VN_TZ = timezone(timedelta(hours=7))
 
-def _load_local_dotenv() -> None:
+def _load_local_dotenv(dotenv_path: str | None = None) -> None:
     """Đọc file .env cục bộ bằng stdlib (nếu có) để tránh hardcode khóa API trong mã nguồn."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    env_path = dotenv_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
     if not os.path.isfile(env_path):
         return
     try:
-        with open(env_path, "r", encoding="utf-8") as fh:
+        with open(env_path, "r", encoding="utf-8-sig") as fh:
             for raw_line in fh:
                 line = raw_line.strip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
                 k = k.strip()
+                if k.startswith("export "):
+                    k = k[7:].strip()
                 v = v.strip().strip('"').strip("'")
                 if k and k not in os.environ:
                     os.environ[k] = v
@@ -221,6 +223,18 @@ def _is_weather_topic(raw_text: str, text_norm: str) -> bool:
     if re.search(r"\b(?:lanh|ret|nong)\b", n) and re.search(r"\b(?:troi|hom nay|ngay mai|thoi tiet|khi hau|rat|hoi)\s+(?:lanh|ret|nong)\b", n):
         return True
 
+    # 4. Câu hỏi nối tiếp ngắn về ngày mai (vd: "ngày mai thế nào?", "còn ngày mai?") ngay sau lượt hỏi thời tiết
+    if len(n.split()) <= 7 and re.search(
+        r"\b(?:ngay\s+mai|tomorrow)\b.*\b(?:the\s+nao|ra\s+sao|sao\s+roi)\b|\b(?:con|vay|the)\s+ngay\s+mai\b",
+        n,
+    ):
+        with _CHAT_HISTORY_LOCK:
+            recent_hist = list(_CHAT_HISTORY[-8:])
+        for item in recent_hist:
+            content = str(item.get("content") or "")
+            if "🌤️" in content or "thời tiết" in content.lower() or "dự báo" in content.lower():
+                return True
+
     return False
 
 # Ngữ cảnh đi trước các từ viết tắt tên tỉnh/thành phố 2 chữ cái để không thay nhầm từ thông thường (vd: "máy in hp", "nhắn tin nt")
@@ -283,35 +297,136 @@ _UNACCENTED_PHRASE_MAP: list[tuple[str, str]] = [
 ]
 
 
+_CODE_SEGMENT_RE = re.compile(r"(`{3,})[\s\S]*?(?:\1`*|$)|``(?:(?!``)[^\n])+``|`[^`\n]+`")
+_LIKELY_CODE_LINE_RE = re.compile(
+    r"^\s*(?:let|var|const|func|function|def|class|struct|enum|extension|protocol|interface|type|typedef|"
+    r"import|export|return|yield|elif|else|switch|case|guard|async|await|try|catch|finally|throw|throws|"
+    r"public|private|protected|internal|fileprivate|static|final|override|mutating|void|int|double|float|bool|"
+    r"String|Widget|State|BuildContext|@[A-Za-z_]\w*|//|/\*|\*/|\*\s|#include|#define|#pragma)\b"
+    r"|^\s*(?:if|for|while)\b(?=.*(?:[({:=<>!]|->|=>))"
+    r"|^\s*[\"'][A-Za-z0-9_.-]+[\"']\s*:"
+    r"|^\s*</?[A-Za-z][A-Za-z0-9_.-]*(?:\s|>|/>)"
+    r"|[{}]|=>|->|===|!==|==|!=|<=|>=|\+=|-=|\*=|/=|:=|\s(?:&&|\|\|)\s"
+    r"|;\s*(?://|#|$)"
+    r"|\b[A-Za-z_][A-Za-z0-9_.]*\s*=\s*[^=]"
+    r"|\b[A-Za-z_]\w*\.[A-Za-z_]\w*\("
+    r"|^\s*[A-Za-z_][A-Za-z0-9_.]*\([^()\n]*\)\s*;?\s*$"
+)
+_LIKELY_SQL_OR_CLI_RE = re.compile(
+    r"^\s*(?:SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM|"
+    r"CREATE\s+(?:TABLE|INDEX|VIEW|DATABASE)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW))\b"
+    r"|^\s*(?:git\s+(?:init|clone|status|add|commit|push|pull|fetch|checkout|switch|branch|merge|rebase|reset|stash|log|diff|tag|remote|cherry-pick)"
+    r"|npm\s+(?:install|i|run|start|test|build|init|ci|uninstall|publish|exec)"
+    r"|(?:npx|yarn|pnpm)\s+[A-Za-z0-9_./@-]+"
+    r"|(?:pip|pip3)\s+(?:install|uninstall|freeze|list|show)"
+    r"|(?:python|python3)\s+(?:-[mc]\b|\S+\.py\b)"
+    r"|pytest(?:\s|$)"
+    r"|flutter\s+(?:run|build|pub|clean|create|test|doctor|analyze|upgrade|channel)"
+    r"|dart\s+(?:run|compile|pub|analyze|test|fix|format)"
+    r"|swift\s+(?:build|run|test|package)"
+    r"|docker\s+(?:run|build|compose|ps|exec|pull|push|images|logs|stop|rm)"
+    r"|(?:cd|mkdir|rmdir|chmod|chown|curl|wget)\s+[A-Za-z0-9_./~$-])\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _iter_code_and_prose_segments(s: str) -> list[tuple[bool, str]]:
+    segments: list[tuple[bool, str]] = []
+    last = 0
+    for m in _CODE_SEGMENT_RE.finditer(s):
+        if m.start() > last:
+            segments.append((False, s[last : m.start()]))
+        segments.append((True, m.group(0)))
+        last = m.end()
+    if last < len(s):
+        segments.append((False, s[last:]))
+    return segments
+
+
+def _is_likely_code_line(line: str, is_multiline: bool = False) -> bool:
+    if not line or not line.strip():
+        return False
+    if is_multiline and re.match(r"^[\t ]{2,}\S", line):
+        return True
+    if _LIKELY_CODE_LINE_RE.search(line):
+        return True
+    if not line.rstrip().endswith("?") and _LIKELY_SQL_OR_CLI_RE.search(line):
+        return True
+    return False
+
+
+def _normalize_prose_fragment(frag: str) -> str:
+    if not frag:
+        return ""
+    s = re.sub(r"[ \t]+", " ", frag)
+    if not s.strip():
+        return " " if " " in s else ""
+    # Loại bỏ cụm >= 2 từ bị lặp liên tiếp do ranh giới STT interim -> final, giữ nguyên từ láy đơn
+    s = re.sub(r"\b(\w+\s+\w+)\s+\1\b", r"\1", s, flags=re.IGNORECASE)
+    for pattern, replacement in _UNACCENTED_PHRASE_MAP:
+        s = re.sub(pattern, replacement, s, flags=re.IGNORECASE)
+    for pattern, replacement in _VN_SHORTHAND_MAP:
+        s = re.sub(pattern, replacement, s, flags=re.IGNORECASE)
+    return re.sub(r"[ \t]+", " ", s)
+
+
 def normalize_vietnamese_input(raw_text: str) -> str:
     """
     Chuẩn hóa đầu vào tiếng Việt (từ cả giọng nói STT và bàn phím):
     1. Chuẩn hóa bảng mã Unicode dựng sẵn (NFC) và ký tự Đ/đ.
-    2. Làm sạch khoảng trắng thừa và cụm 2 từ lặp liên tiếp do STT (bảo toàn từ láy tiếng Việt).
-    3. Mở rộng từ viết tắt / teencode / địa danh viết tắt sang tiếng Việt chuẩn.
-    4. Khôi phục dấu tiếng Việt cho các cụm từ khóa thông dụng khi gõ không dấu.
+    2. Bảo toàn nguyên vẹn xuống dòng (\\n), thụt lề (indentation) và tên biến trong khối code
+       (```...```, ````...````, `...`, hoặc dòng mã nguồn / SQL / CLI paste trực tiếp như `let sg = 1; let dc = 2`).
+    3. Với văn xuôi tiếng Việt: làm sạch khoảng trắng thừa, khử lặp từ STT, mở rộng từ viết tắt
+       và khôi phục dấu tiếng Việt cho các cụm từ khóa thông dụng.
     """
     if not raw_text:
         return ""
     s = unicodedata.normalize("NFC", str(raw_text))
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
     s = s.replace("Ð", "Đ").replace("ð", "đ")
-    s = re.sub(r"[\u200b\u200c\u200d\ufeff\u00a0]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    if not s:
+    s = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", s)
+    s = s.replace("\u00a0", " ")
+    if not s.strip():
         return ""
 
-    # Loại bỏ cụm >= 2 từ bị lặp liên tiếp do ranh giới STT interim -> final (vd: "thời tiết thời tiết hà nội"), giữ nguyên từ láy đơn
-    s = re.sub(r"\b(\w+\s+\w+)\s+\1\b", r"\1", s, flags=re.IGNORECASE)
+    # Tách bỏ các dòng trống thừa ở đầu/cuối nhưng giữ nguyên thụt lề của dòng code đầu tiên
+    s = re.sub(r"^(?:[ \t]*\n)+", "", s)
+    s = s.rstrip()
+    is_multiline = "\n" in s
 
-    # Khôi phục dấu cho các cụm từ khóa phổ biến trước để hỗ trợ nhận diện ngữ cảnh địa danh
-    for pattern, replacement in _UNACCENTED_PHRASE_MAP:
-        s = re.sub(pattern, replacement, s, flags=re.IGNORECASE)
+    segments = _iter_code_and_prose_segments(s)
+    out_parts: list[str] = []
+    for idx, (is_code, part) in enumerate(segments):
+        if not part:
+            continue
+        if is_code:
+            # Đoạn nằm trong ```...``` / ````...```` hoặc `...` -> giữ nguyên 100% từng ký tự và khoảng trắng
+            out_parts.append(part)
+            continue
 
-    # Mở rộng từ viết tắt và sửa lỗi phiên âm STT
-    for pattern, replacement in _VN_SHORTHAND_MAP:
-        s = re.sub(pattern, replacement, s, flags=re.IGNORECASE)
+        lines = part.split("\n")
+        norm_lines: list[str] = []
+        for line_idx, line in enumerate(lines):
+            if _is_likely_code_line(line, is_multiline=is_multiline):
+                norm_lines.append(line.rstrip())
+            else:
+                norm_frag = _normalize_prose_fragment(line)
+                # Chỉ trim đầu dòng nếu thực sự ở đầu dòng (không liền sau inline `code`)
+                at_line_start = (idx == 0) or (line_idx > 0)
+                # Chỉ trim cuối dòng nếu thực sự ở cuối dòng (không liền trước inline `code`)
+                at_line_end = (idx == len(segments) - 1) or (line_idx < len(lines) - 1)
+                if at_line_start:
+                    norm_frag = norm_frag.lstrip(" \t")
+                if at_line_end:
+                    norm_frag = norm_frag.rstrip(" \t")
+                norm_lines.append(norm_frag)
+        out_parts.append("\n".join(norm_lines))
 
-    return re.sub(r"\s+", " ", s).strip()
+    result = "".join(out_parts)
+    if not is_multiline and "```" not in result:
+        return result.strip()
+    return result
+
 
 
 def _strip_accents(s: str) -> str:
@@ -594,7 +709,9 @@ def extract_and_update_profile_from_message(raw_message: str) -> dict[str, str]:
     if not prof.get("auto_learn", True):
         return {}
 
-    msg = raw_message.strip()
+    msg = _CODE_SEGMENT_RE.sub(" ", raw_message).strip()
+    if not msg:
+        return {}
     updated: dict[str, str] = {}
 
     # 1. Tên gọi (1 đến 4 từ tiếng Việt, loại bỏ trợ từ cảm thán ở cuối như 'nha', 'nhé', 'nè', 'ạ')
@@ -840,7 +957,7 @@ def _detect_city_in_text(text_norm: str) -> str:
             return extracted
     # Nếu câu hiện tại là câu hỏi nối tiếp (vd: "vậy mặc gì hợp?"), kiểm tra thành phố vừa nhắc ở các lượt trước
     with _CHAT_HISTORY_LOCK:
-        history_slice = list(_CHAT_HISTORY[-6:])
+        history_slice = list(_CHAT_HISTORY)
     # Ưu tiên kiểm tra câu hỏi người dùng trước để lấy chính xác địa danh người dùng đã nêu (thay vì tên tỉnh do geocoding trả về)
     for item in reversed(history_slice):
         if item.get("role") == "user":
@@ -1590,7 +1707,7 @@ def _build_system_context(text_norm: str, prefs: dict | None = None, raw_message
         weather_info = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
         ctx_lines.append(
             f"[Dữ liệu thời tiết thực tế từ Open-Meteo]:\n{weather_info}\n"
-            "(Hãy dùng chính xác số liệu thời tiết trên để trả lời hoặc tư vấn phù hợp thực tế)."
+            "(Hãy dùng chính xác số liệu và nêu rõ tên địa danh trong dữ liệu thời tiết trên để trả lời hoặc tư vấn phù hợp thực tế)."
         )
     return "\n".join(ctx_lines)
 
@@ -1618,6 +1735,58 @@ def _clear_chat_history() -> None:
         _CHAT_HISTORY.clear()
     _GEMINI_COOLDOWN_UNTIL.clear()
     _GEMINI_NETWORK_OFFLINE_UNTIL = 0.0
+
+
+def clear_chat_history() -> None:
+    """Xóa sạch toàn bộ lịch sử hội thoại trong bộ nhớ backend (an toàn đa luồng)."""
+    _clear_chat_history()
+
+
+def get_chat_history() -> list[dict[str, str]]:
+    """Lấy bản sao lịch sử hội thoại hiện tại (an toàn đa luồng)."""
+    with _CHAT_HISTORY_LOCK:
+        return [
+            {
+                "role": str(item.get("role") or "user"),
+                "content": str(item.get("content") or ""),
+            }
+            for item in _CHAT_HISTORY
+            if isinstance(item, dict) and str(item.get("content") or "").strip()
+        ]
+
+
+def restore_chat_history(items: list[dict], replace_only_if_empty: bool = True) -> int:
+    """
+    Khôi phục lịch sử hội thoại từ client (sau F5 / khởi động lại server) vào _CHAT_HISTORY.
+    Mặc định chỉ nạp khi _CHAT_HISTORY đang rỗng để không ghi đè phiên đang hoạt động.
+    """
+    if not isinstance(items, list):
+        return 0
+    max_msgs = MAX_HISTORY_TURNS * 2
+    cleaned: list[dict] = []
+    for raw_item in items:
+        if not isinstance(raw_item, dict):
+            continue
+        role = str(raw_item.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = str(raw_item.get("content") or "").strip()
+        if not content:
+            continue
+        entry: dict = {"role": role, "content": content}
+        if role == "assistant":
+            entry["is_fast_path"] = bool(raw_item.get("is_fast_path", False))
+        cleaned.append(entry)
+
+    if len(cleaned) > max_msgs:
+        cleaned = cleaned[-max_msgs:]
+
+    with _CHAT_HISTORY_LOCK:
+        if replace_only_if_empty and _CHAT_HISTORY:
+            return len(_CHAT_HISTORY)
+        _CHAT_HISTORY.clear()
+        _CHAT_HISTORY.extend(cleaned)
+        return len(_CHAT_HISTORY)
 
 
 def _get_sanitized_history_for_prefs(prefs: dict | None = None) -> list[dict[str, str]]:
@@ -2033,7 +2202,7 @@ def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False
         weather_info = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
         ctx_lines.append(
             f"[Dữ liệu thời tiết thực tế từ Open-Meteo]:\n{weather_info}\n"
-            "(Hãy dùng chính xác số liệu thời tiết trên để trả lời hoặc tư vấn phù hợp thực tế)."
+            "(Hãy dùng chính xác số liệu và nêu rõ tên địa danh trong dữ liệu thời tiết trên để trả lời hoặc tư vấn phù hợp thực tế)."
         )
         yield {"type": "state", "state": "weaving", "label": "Đang đan ghép dữ liệu vào ngữ cảnh AI…"}
 
