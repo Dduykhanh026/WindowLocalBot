@@ -1663,3 +1663,450 @@ html[data-theme="light"] .clear-history-pill:hover {
     display: none;
   }
 }
+
+/* ==========================================================================
+   MILESTONE M4: TRUNG TÂM BỘ NHỚ WISP 3 TAB (HỒ SƠ · KÝ ỨC · VIỆC CẦN NHỚ)
+   & LIÊN KẾT NGUỒN THAM KHẢO WEB GROUNDING
+   ========================================================================== */
+
+.user-profile-panel {
+  width: 432px;
+  max-height: calc(100vh - 84px);
+  overflow-y: auto;
+}
+
+.memory-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5.5px;
+  margin-left: 2px;
+  border-radius: 999px;
+  font-size: 10.6px;
+  font-weight: 700;
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+  line-height: 1;
+}
+
+.memory-count-badge[hidden] {
+  display: none !important;
+}
+
+.memory-tabs-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 3px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.mem-tab-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.mem-tab-pill:hover:not(.active) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.mem-tab-pill.active {
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.mem-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 16px;
+  padding: 0 4.5px;
+  border-radius: 999px;
+  font-size: 10.2px;
+  font-weight: 700;
+  background: rgba(127, 127, 140, 0.2);
+  color: inherit;
+}
+
+.mem-tab-pill.active .mem-tab-count {
+  background: rgba(127, 127, 140, 0.28);
+}
+
+.memory-tab-pane[hidden] {
+  display: none !important;
+}
+
+.memory-quick-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.memory-cat-select {
+  width: 112px;
+  flex-shrink: 0;
+  padding: 6.5px 7px;
+  font-size: 11.8px;
+  cursor: pointer;
+}
+
+.memory-add-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6.5px 10px;
+  font-size: 12.3px;
+}
+
+.memory-add-btn {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: none;
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.memory-add-btn:hover {
+  opacity: 0.92;
+  transform: translateY(-0.5px);
+}
+
+.memory-search-wrap {
+  margin-bottom: 9px;
+}
+
+.memory-search-input {
+  padding: 6px 10px;
+  font-size: 12.1px;
+}
+
+.memory-list-container {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 292px;
+  overflow-y: auto;
+  padding-right: 2px;
+  margin-bottom: 10px;
+}
+
+.memory-empty-state {
+  padding: 18px 14px;
+  border-radius: 12px;
+  border: 1px dashed var(--border-strong);
+  background: color-mix(in srgb, var(--bg-elevated) 65%, transparent);
+  color: var(--text-secondary);
+  font-size: 12.1px;
+  line-height: 1.48;
+  text-align: center;
+}
+
+.memory-item-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.memory-item-card:hover {
+  border-color: var(--border-strong);
+}
+
+.memory-item-card.pinned {
+  border-color: rgba(245, 158, 11, 0.42);
+  background: color-mix(in srgb, var(--bg-elevated) 92%, rgba(245, 158, 11, 0.1));
+}
+
+.memory-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.memory-cat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1.5px 7.5px;
+  border-radius: 999px;
+  font-size: 10.6px;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-secondary);
+}
+
+.memory-cat-badge[data-cat="project"] {
+  background: rgba(59, 130, 246, 0.16);
+  color: #60a5fa;
+}
+.memory-cat-badge[data-cat="preference"] {
+  background: rgba(236, 72, 153, 0.16);
+  color: #f472b6;
+}
+.memory-cat-badge[data-cat="habit"] {
+  background: rgba(168, 85, 247, 0.16);
+  color: #c084fc;
+}
+.memory-cat-badge[data-cat="health"] {
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+}
+.memory-cat-badge[data-cat="skill"] {
+  background: rgba(14, 165, 233, 0.16);
+  color: #38bdf8;
+}
+.memory-cat-badge[data-cat="relationship"] {
+  background: rgba(249, 115, 22, 0.16);
+  color: #fb923c;
+}
+
+html[data-theme="light"] .memory-cat-badge[data-cat="project"] {
+  color: #2563eb;
+}
+html[data-theme="light"] .memory-cat-badge[data-cat="preference"] {
+  color: #db2777;
+}
+html[data-theme="light"] .memory-cat-badge[data-cat="habit"] {
+  color: #7e22ce;
+}
+html[data-theme="light"] .memory-cat-badge[data-cat="health"] {
+  color: #059669;
+}
+html[data-theme="light"] .memory-cat-badge[data-cat="skill"] {
+  color: #0284c7;
+}
+html[data-theme="light"] .memory-cat-badge[data-cat="relationship"] {
+  color: #ea580c;
+}
+
+.memory-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pin-btn,
+.mem-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11.2px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.pin-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+}
+
+.pin-btn.active {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.34);
+  font-weight: 600;
+}
+
+html[data-theme="light"] .pin-btn.active {
+  color: #d97706;
+}
+
+.mem-delete-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.memory-item-content {
+  font-size: 12.6px;
+  line-height: 1.44;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+/* Hàng Việc cần nhớ & Kế hoạch */
+.task-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  transition: border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.task-item-row:hover {
+  border-color: var(--border-strong);
+}
+
+.task-item-row.done {
+  opacity: 0.64;
+}
+
+.task-check-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  margin-top: 1px;
+  border-radius: 6px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: transparent;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.14s ease;
+}
+
+.task-check-btn:hover {
+  border-color: var(--text-primary);
+}
+
+.task-check-btn.checked {
+  background: #10b981;
+  border-color: #10b981;
+  color: #ffffff;
+}
+
+.task-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.task-title-text {
+  font-size: 12.6px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.task-item-row.done .task-title-text {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+.task-due-badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.8px;
+  font-weight: 500;
+  background: rgba(59, 130, 246, 0.14);
+  color: #60a5fa;
+}
+
+html[data-theme="light"] .task-due-badge {
+  color: #2563eb;
+}
+
+.memory-pane-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.memory-footer-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.memory-clear-link {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 6px;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+
+.memory-clear-link:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Liên kết Markdown & Nguồn tham khảo Web Grounding trong bong bóng Chat */
+.chat-md-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2.5px;
+  font-weight: 500;
+  transition: color 0.14s ease, opacity 0.14s ease;
+}
+
+.chat-md-link:hover {
+  color: #93c5fd;
+  opacity: 0.95;
+}
+
+html[data-theme="light"] .chat-md-link {
+  color: #2563eb;
+}
+
+html[data-theme="light"] .chat-md-link:hover {
+  color: #1d4ed8;
+}
+

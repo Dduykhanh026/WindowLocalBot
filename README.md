@@ -27,13 +27,14 @@ Bạn có thể bấm trực tiếp vào **4 nút gợi ý nhanh** trên giao di
 |---|---|---|
 | **Thời tiết mặc định** | `thời tiết` | Thời tiết hiện tại ở Sài Gòn (nhiệt độ, cảm giác thực, độ ẩm, tốc độ gió) |
 | **Thời tiết các tỉnh/thành** | `thời tiết Hà Nội`<br>`thoi tiet Da Nang`<br>`thời tiết Đà Lạt` | Thời tiết hiện tại tại địa điểm bạn muốn tra cứu (hỗ trợ cả gõ không dấu) |
-| **Dự báo thời tiết ngày mai** | `thời tiết ngày mai Đà Lạt`<br>`thời tiết ngày mai` | Dự báo ngày mai gồm mô tả thời tiết, nhiệt độ thấp nhất/cao nhất và khả năng mưa (%) |
+| **Dự báo thời tiết ngày mai & 7 ngày** | `thời tiết ngày mai Đà Lạt`<br>`thời tiết cuối tuần này`<br>`thời tiết 3 ngày tới Hà Nội` | Dự báo ngày mai hoặc tối đa 7 ngày tới (cuối tuần, ngày mốt, thứ cụ thể) kèm nhiệt độ thấp/cao và khả năng mưa (%) |
 | **Giờ Việt Nam hiện tại** | `mấy giờ`, `giờ` | Giờ hiện tại ở Việt Nam kèm thứ và ngày tháng |
 | **Giờ quốc tế** | `giờ ở Tokyo`, `giờ ở London`,<br>`giờ ở New York`, `giờ ở Seoul`,<br>`giờ ở Sydney`, `giờ ở Bangkok`,<br>`giờ ở Singapore`, `giờ ở Paris` | Giờ hiện tại ở các thành phố lớn trên thế giới (hỗ trợ thêm cả Mỹ, Anh, Nhật, Hàn, Pháp, Đức, Úc, Thái Lan...) |
 | **Ngày tháng hôm nay** | `hôm nay`, `ngày mấy` | Thứ trong tuần và ngày/tháng/năm hiện tại |
-| **Tư vấn thời tiết bằng AI** | `thời tiết Sài Gòn hôm nay mặc gì hợp?`<br>`ngày mai Đà Lạt có mưa không, nên đi đâu?` | Tự động lấy số liệu thật từ **Open-Meteo** kết hợp **AI Qwen 2.5 (3B)** để tư vấn trang phục, lịch trình |
-| **Hỏi đáp, Trò chuyện & Code (AI Local)** | `viết hàm SwiftUI tạo nút bo góc`<br>`giải thích StateWidget trong Flutter`<br>`kể chuyện vui` | Trả lời thông minh bằng tiếng Việt qua model **Qwen 2.5 (3B)** chạy trên **Ollama**, có nhớ ngữ cảnh 10 lượt hội thoại gần nhất |
-| **Xóa bộ nhớ trò chuyện AI** | `xóa lịch sử`, `clear`, `reset` | Xóa lịch sử hội thoại đang lưu trong RAM (`🧹 Wisp đã xóa lịch sử trò chuyện.`) |
+| **Trí nhớ dài hạn & Nhắc việc cá nhân** | `Ghi nhớ: Mình đang làm dự án FitNote`<br>`Nhắc mình sáng thứ Hai nộp bản build`<br>`Xong việc nộp bản build`<br>`Quên chuyện ... đi` | Wisp tự học ngầm hoặc lưu tức thì vào **SQLite cục bộ** (`wisp_memory.db`). Bấm nút **Hồ sơ & Bộ nhớ** trên góc phải để xem/ghim/xóa từng **Ký ức** & **Việc cần nhớ** |
+| **Tư vấn chủ động & Tra cứu Web** | `cuối tuần này trời có mưa không, nên đi đâu?`<br>`Swift 6.1 mới ra có tính năng gì mới?` | Kết hợp Thời gian + Thời tiết 7 ngày + Trí nhớ cá nhân để tư vấn chủ động; tự bật **Suy luận thích ứng** cho câu khó và đính kèm nguồn Web thực tế khi có mạng |
+| **Hỏi đáp, Trò chuyện & Code** | `viết hàm SwiftUI tạo nút bo góc`<br>`giải thích StateWidget trong Flutter`<br>`kể chuyện vui` | Trả lời thông minh bằng tiếng Việt qua **Gemini Online** (khi có mạng) hoặc **Qwen 2.5 (3B) trên Ollama** (offline), tự tóm tắt cuộn mạch chat dài |
+| **Xóa lịch sử khung chat** | `xóa lịch sử`, `clear`, `reset` (hoặc nút **Xóa chat**) | Chỉ xóa sạch khung hội thoại hiện tại, **giữ nguyên 100% Ký ức dài hạn, Việc cần nhớ & Hồ sơ cá nhân** |
 | **Xem hướng dẫn** | `help`, `trợ giúp` | Hiển thị danh sách tóm tắt tất cả các lệnh |
 
 ---

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Wisp</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261031_p2">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261031_m4">
 </head>
 <body>
   <!-- Thanh điều khiển nổi trên cùng (Floating Glassmorphic Assistant Bar) — Thiết kế gọn gàng chuẩn Trợ lý cá nhân -->
@@ -35,7 +35,7 @@
 
     <!-- Cụm 2 (MỚI): Hồ sơ Chủ nhân & Bộ nhớ Trợ lý Cá nhân -->
     <div class="ai-config-wrap profile-config-wrap" id="userProfileWrap">
-      <button type="button" id="userProfileBtn" class="profile-pill-btn" aria-expanded="false" aria-controls="userProfilePanel" title="Hồ sơ cá nhân của bạn (Tên, tuổi, chiều cao, cân nặng, nơi ở, công việc)">
+      <button type="button" id="userProfileBtn" class="profile-pill-btn" aria-expanded="false" aria-controls="userProfilePanel" title="Hồ sơ cá nhân & Bộ nhớ dài hạn của Wisp">
         <span class="profile-avatar-dot" aria-hidden="true">
           <!-- Iconsax: user -->
           <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -46,10 +46,11 @@
         <span id="profileTopName" class="profile-top-name">{{ profile.name if profile and profile.name else 'Bạn' }}</span>
         <span class="profile-top-sep" aria-hidden="true">·</span>
         <span id="profileTopMeta" class="profile-top-meta">{{ profile.city if profile and profile.city else 'TP.HCM' }}</span>
+        <span id="memoryCountBadge" class="memory-count-badge" title="Tổng số ký ức dài hạn & việc đang chờ" {% if not memory_counts or (memory_counts.memories_total + memory_counts.pending_tasks) == 0 %}hidden{% endif %}>{{ (memory_counts.memories_total + memory_counts.pending_tasks) if memory_counts else 0 }}</span>
       </button>
 
-      <!-- Bảng Popover Hồ sơ Cá nhân & Trí nhớ Trợ lý Wisp -->
-      <div id="userProfilePanel" class="ai-config-panel user-profile-panel" role="dialog" aria-label="Hồ sơ cá nhân của chủ nhân" hidden>
+      <!-- Bảng Popover Hồ sơ Cá nhân & Trí nhớ Trợ lý Wisp (3 Tab: Hồ sơ · Ký ức · Việc cần nhớ) -->
+      <div id="userProfilePanel" class="ai-config-panel user-profile-panel" role="dialog" aria-label="Hồ sơ cá nhân & Bộ nhớ Wisp" hidden>
         <div class="ai-config-header">
           <div class="ai-config-title-wrap">
             <svg class="isax ai-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -57,8 +58,8 @@
               <path d="M20.5899 22C20.5899 18.13 16.7399 15 11.9999 15C7.25991 15 3.40991 18.13 3.40991 22"></path>
             </svg>
             <div>
-              <span class="ai-config-title">Hồ sơ của tôi (Bộ nhớ Wisp)</span>
-              <span class="profile-subtitle">Giúp Wisp hiểu bạn để tư vấn thời tiết, sức khỏe & công việc chuẩn xác</span>
+              <span class="ai-config-title">Bộ nhớ Wisp & Hồ sơ của tôi</span>
+              <span class="profile-subtitle">Trí nhớ dài hạn lưu cục bộ trên máy, độc lập với nút Xóa lịch sử chat</span>
             </div>
           </div>
           <button type="button" id="resetProfileBtn" class="ai-reset-btn" title="Khôi phục hồ sơ mặc định">
@@ -69,90 +70,159 @@
           </button>
         </div>
 
-        <!-- Thẻ tóm tắt BMI & Thể trạng tự động (hiện khi có chiều cao + cân nặng) -->
-        <div id="bmiSummaryCard" class="bmi-summary-card" hidden>
-          <div class="bmi-badge-main">
-            <span class="bmi-label-tag">Chỉ số BMI</span>
-            <strong id="bmiValueText">22.5</strong>
-            <span id="bmiStatusBadge" class="bmi-status-pill">Cân đối</span>
-          </div>
-          <span id="waterRecommendText" class="bmi-water-hint">💧 Nên uống ~2.3L nước/ngày</span>
+        <!-- Thanh chuyển 3 Tab: Hồ sơ · Ký ức · Việc cần nhớ -->
+        <div class="memory-tabs-bar" id="memoryTabsBar" role="tablist" aria-label="Phân mục Bộ nhớ Wisp">
+          <button type="button" id="memTabProfileBtn" class="mem-tab-pill active" data-mem-tab="profile" role="tab" aria-selected="true" aria-controls="memPaneProfile">
+            <span>Hồ sơ</span>
+          </button>
+          <button type="button" id="memTabMemoriesBtn" class="mem-tab-pill" data-mem-tab="memories" role="tab" aria-selected="false" aria-controls="memPaneMemories">
+            <span>Ký ức</span>
+            <span id="memTabMemoriesCount" class="mem-tab-count">{{ memory_counts.memories_total if memory_counts else 0 }}</span>
+          </button>
+          <button type="button" id="memTabTasksBtn" class="mem-tab-pill" data-mem-tab="tasks" role="tab" aria-selected="false" aria-controls="memPaneTasks">
+            <span>Việc cần nhớ</span>
+            <span id="memTabTasksCount" class="mem-tab-count">{{ memory_counts.pending_tasks if memory_counts else 0 }}</span>
+          </button>
         </div>
 
-        <!-- Lưới nhập thông tin cá nhân -->
-        <div class="profile-form-grid">
-          <label class="profile-field">
-            <span class="profile-field-label">Tên gọi</span>
-            <input type="text" id="profNameInput" class="profile-input" placeholder="VD: Khánh" maxlength="35">
-          </label>
-          <label class="profile-field">
-            <span class="profile-field-label">Giới tính</span>
-            <select id="profGenderInput" class="profile-input">
-              <option value="Nam" {% if profile and profile.gender == "Nam" %}selected{% endif %}>Nam</option>
-              <option value="Nữ" {% if profile and profile.gender == "Nữ" %}selected{% endif %}>Nữ</option>
-              <option value="Khác" {% if profile and profile.gender == "Khác" %}selected{% endif %}>Khác</option>
-            </select>
-          </label>
-          <label class="profile-field">
-            <span class="profile-field-label">Tuổi</span>
-            <input type="number" id="profAgeInput" class="profile-input" placeholder="VD: 25" min="8" max="100">
-          </label>
-          <label class="profile-field">
-            <span class="profile-field-label">Chiều cao (cm)</span>
-            <input type="number" id="profHeightInput" class="profile-input" placeholder="VD: 172" min="100" max="230">
-          </label>
-          <label class="profile-field">
-            <span class="profile-field-label">Cân nặng (kg)</span>
-            <input type="number" id="profWeightInput" class="profile-input" placeholder="VD: 66" min="25" max="220" step="0.5">
-          </label>
-          <label class="profile-field profile-field-full">
-            <span class="profile-field-label">Nơi ở hiện tại (Thành phố mặc định khi hỏi thời tiết)</span>
-            <input type="text" id="profCityInput" class="profile-input" list="vnCitiesList" placeholder="VD: TP. Hồ Chí Minh, Đà Nẵng, Hà Nội..." maxlength="50">
-            <datalist id="vnCitiesList">
-              <option value="TP. Hồ Chí Minh"></option>
-              <option value="Hà Nội"></option>
-              <option value="Đà Nẵng"></option>
-              <option value="Đà Lạt"></option>
-              <option value="Cần Thơ"></option>
-              <option value="Hải Phòng"></option>
-              <option value="Nha Trang"></option>
-              <option value="Vũng Tàu"></option>
-              <option value="Huế"></option>
-              <option value="Quy Nhơn"></option>
-              <option value="Buôn Ma Thuột"></option>
-            </datalist>
-          </label>
-          <label class="profile-field profile-field-full">
-            <span class="profile-field-label">Công việc & Chuyên môn</span>
-            <input type="text" id="profJobInput" class="profile-input" placeholder="VD: iOS/SwiftUI & Flutter Developer" maxlength="80">
-          </label>
-          <label class="profile-field profile-field-full">
-            <span class="profile-field-label">Thói quen / Sở thích / Lưu ý sức khỏe</span>
-            <textarea id="profNotesInput" class="profile-input profile-textarea" rows="2" placeholder="VD: Hay thức khuya code, thích cà phê sữa, muốn ăn uống giữ dáng, dị ứng hải sản..." maxlength="200"></textarea>
-          </label>
-        </div>
-
-        <div class="ai-config-toggles profile-auto-learn-box">
-          <label class="ai-toggle-row">
-            <span class="rule-icon-box" aria-hidden="true">
-              <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"></path>
-              </svg>
-            </span>
-            <div class="ai-toggle-text">
-              <span class="ai-toggle-name">Tự động học khi trò chuyện</span>
-              <span class="ai-toggle-desc">Tự ghi nhớ khi bạn nói tuổi, chiều cao, cân nặng, nơi ở trong lúc chat</span>
+        <!-- TAB 1: HỒ SƠ CÁ NHÂN (Mặc định hiển thị để tương thích 100%) -->
+        <div id="memPaneProfile" class="memory-tab-pane" data-mem-pane="profile" role="tabpanel">
+          <!-- Thẻ tóm tắt BMI & Thể trạng tự động (hiện khi có chiều cao + cân nặng) -->
+          <div id="bmiSummaryCard" class="bmi-summary-card" hidden>
+            <div class="bmi-badge-main">
+              <span class="bmi-label-tag">Chỉ số BMI</span>
+              <strong id="bmiValueText">22.5</strong>
+              <span id="bmiStatusBadge" class="bmi-status-pill">Cân đối</span>
             </div>
-            <span class="ios-switch">
-              <input type="checkbox" id="profAutoLearnToggle" checked>
-              <span class="switch-slider"></span>
-            </span>
-          </label>
+            <span id="waterRecommendText" class="bmi-water-hint">💧 Nên uống ~2.3L nước/ngày</span>
+          </div>
+
+          <!-- Lưới nhập thông tin cá nhân -->
+          <div class="profile-form-grid">
+            <label class="profile-field">
+              <span class="profile-field-label">Tên gọi</span>
+              <input type="text" id="profNameInput" class="profile-input" placeholder="VD: Khánh" maxlength="35">
+            </label>
+            <label class="profile-field">
+              <span class="profile-field-label">Giới tính</span>
+              <select id="profGenderInput" class="profile-input">
+                <option value="Nam" {% if profile and profile.gender == "Nam" %}selected{% endif %}>Nam</option>
+                <option value="Nữ" {% if profile and profile.gender == "Nữ" %}selected{% endif %}>Nữ</option>
+                <option value="Khác" {% if profile and profile.gender == "Khác" %}selected{% endif %}>Khác</option>
+              </select>
+            </label>
+            <label class="profile-field">
+              <span class="profile-field-label">Tuổi</span>
+              <input type="number" id="profAgeInput" class="profile-input" placeholder="VD: 25" min="8" max="100">
+            </label>
+            <label class="profile-field">
+              <span class="profile-field-label">Chiều cao (cm)</span>
+              <input type="number" id="profHeightInput" class="profile-input" placeholder="VD: 172" min="100" max="230">
+            </label>
+            <label class="profile-field">
+              <span class="profile-field-label">Cân nặng (kg)</span>
+              <input type="number" id="profWeightInput" class="profile-input" placeholder="VD: 66" min="25" max="220" step="0.5">
+            </label>
+            <label class="profile-field profile-field-full">
+              <span class="profile-field-label">Nơi ở hiện tại (Thành phố mặc định khi hỏi thời tiết)</span>
+              <input type="text" id="profCityInput" class="profile-input" list="vnCitiesList" placeholder="VD: TP. Hồ Chí Minh, Đà Nẵng, Hà Nội..." maxlength="50">
+              <datalist id="vnCitiesList">
+                <option value="TP. Hồ Chí Minh"></option>
+                <option value="Hà Nội"></option>
+                <option value="Đà Nẵng"></option>
+                <option value="Đà Lạt"></option>
+                <option value="Cần Thơ"></option>
+                <option value="Hải Phòng"></option>
+                <option value="Nha Trang"></option>
+                <option value="Vũng Tàu"></option>
+                <option value="Huế"></option>
+                <option value="Quy Nhơn"></option>
+                <option value="Buôn Ma Thuột"></option>
+              </datalist>
+            </label>
+            <label class="profile-field profile-field-full">
+              <span class="profile-field-label">Công việc & Chuyên môn</span>
+              <input type="text" id="profJobInput" class="profile-input" placeholder="VD: iOS/SwiftUI & Flutter Developer" maxlength="80">
+            </label>
+            <label class="profile-field profile-field-full">
+              <span class="profile-field-label">Thói quen / Sở thích / Lưu ý sức khỏe</span>
+              <textarea id="profNotesInput" class="profile-input profile-textarea" rows="2" placeholder="VD: Hay thức khuya code, thích cà phê sữa, muốn ăn uống giữ dáng, dị ứng hải sản..." maxlength="200"></textarea>
+            </label>
+          </div>
+
+          <div class="ai-config-toggles profile-auto-learn-box">
+            <label class="ai-toggle-row">
+              <span class="rule-icon-box" aria-hidden="true">
+                <svg class="isax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"></path>
+                </svg>
+              </span>
+              <div class="ai-toggle-text">
+                <span class="ai-toggle-name">Tự động học khi trò chuyện</span>
+                <span class="ai-toggle-desc">Tự ghi nhớ sở thích, dự án, thói quen và hồ sơ khi bạn kể tự nhiên</span>
+              </div>
+              <span class="ios-switch">
+                <input type="checkbox" id="profAutoLearnToggle" checked>
+                <span class="switch-slider"></span>
+              </span>
+            </label>
+          </div>
+
+          <div class="profile-footer-actions">
+            <span id="profileSaveStatus" class="profile-save-status">Đã đồng bộ với bộ nhớ Wisp</span>
+            <button type="button" id="saveProfileBtn" class="profile-save-btn">Lưu hồ sơ</button>
+          </div>
         </div>
 
-        <div class="profile-footer-actions">
-          <span id="profileSaveStatus" class="profile-save-status">Đã đồng bộ với bộ nhớ Wisp</span>
-          <button type="button" id="saveProfileBtn" class="profile-save-btn">Lưu hồ sơ</button>
+        <!-- TAB 2: KÝ ỨC DÀI HẠN (Sở thích, dự án, thói quen, ghi chú ghim) -->
+        <div id="memPaneMemories" class="memory-tab-pane" data-mem-pane="memories" role="tabpanel" hidden>
+          <div class="memory-quick-add">
+            <select id="memoryCategorySelect" class="profile-input memory-cat-select" aria-label="Phân loại ký ức">
+              <option value="auto">Tự phân loại</option>
+              <option value="project">Dự án</option>
+              <option value="preference">Sở thích</option>
+              <option value="habit">Thói quen</option>
+              <option value="health">Sức khỏe</option>
+              <option value="skill">Kỹ năng</option>
+              <option value="relationship">Quan hệ</option>
+              <option value="fact">Ghi chú</option>
+            </select>
+            <input type="text" id="memoryAddInput" class="profile-input memory-add-input" placeholder="Thêm ký ức (VD: Đang làm app FitNote)…" maxlength="280">
+            <button type="button" id="memoryAddBtn" class="memory-add-btn">Thêm</button>
+          </div>
+
+          <div class="memory-search-wrap">
+            <input type="search" id="memorySearchInput" class="profile-input memory-search-input" placeholder="Tìm nhanh ký ức (hỗ trợ gõ không dấu)…" aria-label="Tìm kiếm ký ức">
+          </div>
+
+          <div id="memoryListContainer" class="memory-list-container" role="list">
+            <div class="memory-empty-state">Chưa có ký ức dài hạn nào. Hãy trò chuyện tự nhiên hoặc thêm ký ức ở trên.</div>
+          </div>
+
+          <div class="memory-pane-footer">
+            <span id="memoryPaneStatus" class="profile-save-status">0 ký ức dài hạn</span>
+            <button type="button" id="clearAllMemoriesBtn" class="memory-clear-link">Xóa tất cả ký ức</button>
+          </div>
+        </div>
+
+        <!-- TAB 3: VIỆC CẦN NHỚ & KẾ HOẠCH CÁ NHÂN -->
+        <div id="memPaneTasks" class="memory-tab-pane" data-mem-pane="tasks" role="tabpanel" hidden>
+          <div class="memory-quick-add">
+            <input type="text" id="taskAddInput" class="profile-input memory-add-input" placeholder="Thêm việc (VD: Sáng thứ Hai nộp bản build TestFlight)…" maxlength="240">
+            <button type="button" id="taskAddBtn" class="memory-add-btn">Thêm</button>
+          </div>
+
+          <div id="taskListContainer" class="memory-list-container" role="list">
+            <div class="memory-empty-state">Chưa có việc cần nhớ nào. Bạn có thể nhắn “Nhắc mình chiều mai họp team”.</div>
+          </div>
+
+          <div class="memory-pane-footer">
+            <span id="taskPaneStatus" class="profile-save-status">0 việc đang chờ</span>
+            <div class="memory-footer-btns">
+              <button type="button" id="clearDoneTasksBtn" class="memory-clear-link">Dọn việc xong</button>
+              <button type="button" id="clearAllTasksBtn" class="memory-clear-link">Xóa hết</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -528,6 +598,6 @@
     </section>
   </div>
 
-  <script src="{{ url_for('static', filename='app.js') }}?v=20261031_p2"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20261031_m4"></script>
 </body>
 </html>

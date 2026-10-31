@@ -6,3 +6,7 @@ venv/
 .env
 .worktrees/
 .agents/
+wisp_memory.db
+wisp_memory.db-wal
+wisp_memory.db-shm
+

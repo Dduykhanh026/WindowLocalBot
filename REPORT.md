@@ -57,13 +57,19 @@
   1. Trong Python stdlib, `urllib.error.HTTPError` là lớp con của `urllib.error.URLError`. Khi máy chủ Open-Meteo thỉnh thoảng trả về `HTTP 503: {"error": true, "reason": "The service is overloaded"}`, khối `except (urllib.error.URLError, ...)` trong `weather.py` bắt nhầm `HTTPError` và báo sai thành `"⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."` dù máy vẫn có Wi-Fi bình thường.
   2. Đã sửa [`_get_json`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/weather.py#L157-L185) để tự động retry tối đa 5 lần khi gặp HTTP `429/500/502/503/504`, thêm bộ nhớ đệm 3 phút (`_JSON_CACHE`, `_GEO_CACHE`) giảm một nửa số request tới Open-Meteo, và tách `except urllib.error.HTTPError:` lên trước `except (urllib.error.URLError, ...):`.
 
+- **Milestone M4 (Trí nhớ Dài hạn SQLite + Năng lực Suy luận Thích ứng)**:
+  - Tạo [`memory_store.py`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/memory_store.py) dùng `sqlite3` có sẵn của Python (WAL mode + `threading.RLock`, tự động cô lập DB tạm khi chạy `unittest`/`pytest`) với 3 bảng `memories`, `tasks`, `episodic_summaries`, khử trùng lặp có bảo vệ tên riêng/đối tượng độc lập, phân tích thời hạn tiếng Việt tự nhiên và truy xuất BM25 lai có/không dấu.
+  - Mở rộng [`weather.py`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/weather.py) thêm [`get_multi_day_weather`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/weather.py#L337-L438) (dự báo tới 7–14 ngày, hỗ trợ `"cuối tuần này"`, `"3 ngày tới"`, `"ngày mốt"`, thứ trong tuần) mà vẫn giữ nguyên 100% chữ ký và format của `get_current_weather` / `get_tomorrow_weather`.
+  - Nâng cấp [`bot.py`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/bot.py): Tự học 2 tầng (Tầng 1 `<1ms` + Tầng 2 AI JSON chạy ngầm với fallback Ollama `format: "json"`), tóm tắt cuộn mạch chat dài (>10 lượt), Suy luận thích ứng (`thinkingConfig.thinkingBudget` động kèm hạ cấp an toàn khi HTTP 400, timeout 9.0s cho non-streaming `generateContent` / 5.0s–15.0s cho SSE), Gemini Google Search Grounding kèm trích nguồn `🌐 Nguồn:` (tự lược bỏ khỏi TTS, tự động hạ cấp bỏ `google_search` ngay trên cùng model Gemini kèm cooldown 180s `_GEMINI_WEB_SEARCH_COOLDOWN_UNTIL` khi gói Free-Tier trả HTTP 429/403 riêng cho tool mà không rơi nhầm về Ollama), và cô lập tuyệt đối lệnh **Xóa lịch sử chat** (chỉ xóa khung chat hiện tại, giữ nguyên 100% Ký ức dài hạn, Việc cần nhớ & Hồ sơ).
+  - Nâng cấp [`app.py`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/app.py), [`templates/index.html`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/templates/index.html), [`static/style.css`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/static/style.css), [`static/app.js`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/static/app.js): Bổ sung REST API `/api/memories`, bảng **Bộ nhớ Wisp 3 Tab** (`Hồ sơ` | `Ký ức` | `Việc cần nhớ`) kèm huy hiệu đếm `#memoryCountBadge` và bộ render liên kết Markdown chống XSS tuyệt đối.
+  - Kiểm thử tự động toàn diện: `python -m unittest discover -s tests -p "test_*.py" -v` → **96 / 96 bài test PASS (`OK`)** (75 bài hồi quy P0–P2 + 21 bài kiểm thử đơn vị, đối kháng, đa luồng và E2E trình duyệt Headless Microsoft Edge thực tế trong [`tests/test_m4_intelligence_memory.py`](file:///C:/Users/ASUS/Documents/AGY/WindowLocalBot/tests/test_m4_intelligence_memory.py)).
+
 ## Lỗi còn tồn tại / lưu ý
 
-- Không có lỗi tồn tại. Lưu ý nhỏ: trên Windows, cần giữ cửa sổ console `run.bat` trong lúc sử dụng (đã in thông báo rõ trên console và trong `README.md`).
+- Không có lỗi chức năng tồn tại. Lưu ý nhỏ: trên Windows, cần giữ cửa sổ console `run.bat` trong lúc sử dụng (đã in thông báo rõ trên console và trong `README.md`); tính năng Google Search Grounding và Gemini Adaptive Thinking yêu cầu kết nối mạng + `GEMINI_API_KEY` (khi mất mạng sẽ tự động chuyển mượt sang AI Local Ollama + SQLite Memory).
 
-## Backlog (ý tưởng V2, KHÔNG code ở V1)
+## Backlog (ý tưởng tiếp theo)
 
-- Dark mode tự động theo hệ điều hành.
-- Lưu lịch sử chat vào `localStorage` kèm nút "Xóa đoạn chat".
 - Đóng gói `.exe` độc lập bằng PyInstaller hoặc chạy ngầm dưới System Tray (`pystray`).
-- Tự khởi động cùng Windows, hỗ trợ PWA manifest, nhắc việc cá nhân.
+- Tự khởi động cùng Windows, hỗ trợ PWA manifest và thông báo nhắc việc Windows Toast Notification khi đến giờ hạn `due_iso`.
+

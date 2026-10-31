@@ -15,6 +15,7 @@ import urllib.request
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 import bot
+import memory_store
 from bot import (
     GREETING,
     clear_chat_history,
@@ -137,6 +138,11 @@ def _prepare_tts_text(raw_text: str) -> str:
     tuyệt đối không đọc máy móc từng dấu hai chấm, dấu ngoặc hay gạch đầu dòng.
     """
     s = str(raw_text or "").strip()
+    if not s:
+        return ""
+
+    # Lọc bỏ dòng chú thích nguồn Web Grounding ở cuối bản tin (🌐 Nguồn: ...) để loa TTS không đọc tên trang web thừa
+    s = re.sub(r"(?:^|\n+)\s*(?:🌐\s*)?Nguồn:\s*[\s\S]*$", "", s).strip()
     if not s:
         return ""
 
@@ -622,7 +628,12 @@ if "unittest" not in sys.modules and not any("test" in arg for arg in sys.argv):
 @app.route("/", methods=["GET"])
 def index():
     """Trả về trang giao diện chat chính."""
-    return render_template("index.html", greeting=GREETING, profile=get_user_profile())
+    return render_template(
+        "index.html",
+        greeting=GREETING,
+        profile=get_user_profile(),
+        memory_counts=memory_store.get_counts(),
+    )
 
 
 @app.route("/api/voices", methods=["GET"])
@@ -694,6 +705,197 @@ def api_history():
         return jsonify({"ok": False, "message": "⚠️ Có lỗi khi đồng bộ lịch sử hội thoại."}), 200
 
 
+def _parse_optional_int(raw_val, default_val: int | None = None) -> tuple[int | None, bool]:
+    if raw_val is None or raw_val == "":
+        return (default_val, True)
+    if isinstance(raw_val, bool):
+        return (None, False)
+    try:
+        return (int(raw_val), True)
+    except (ValueError, TypeError):
+        return (None, False)
+
+
+@app.route("/api/memories", methods=["GET", "POST", "DELETE"])
+def api_memories():
+    """Quản lý kho Ký ức dài hạn (memories) và Việc cần nhớ (tasks) trong SQLite cục bộ."""
+    try:
+        if request.method == "GET":
+            q = str(request.args.get("q") or "").strip()
+            category = str(request.args.get("category") or "").strip()
+            task_status = str(request.args.get("task_status") or "").strip()
+            return jsonify(
+                {
+                    "ok": True,
+                    "memories": memory_store.list_memories(query=q, category=category),
+                    "tasks": memory_store.list_tasks(status=task_status),
+                    "summaries": memory_store.list_episodic_summaries(limit=5),
+                    "counts": memory_store.get_counts(),
+                }
+            ), 200
+
+        if request.method == "POST":
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                data = {}
+            kind = str(data.get("kind") or "memory").strip().lower()
+            if kind in ("task", "tasks"):
+                title = str(data.get("title") or data.get("content") or "").strip()
+                if len(title) < 2:
+                    return jsonify({"ok": False, "message": "⚠️ Vui lòng nhập nội dung việc cần nhớ (ít nhất 2 ký tự)."}), 400
+                due_hint = str(data.get("due_text") or "").strip()
+                due_iso = str(data.get("due_iso") or "").strip()
+                if due_hint and not due_iso:
+                    p_txt, p_iso = memory_store.parse_vietnamese_due_time(due_hint)
+                    if p_txt:
+                        due_hint, due_iso = p_txt, p_iso
+                prio, ok_prio = _parse_optional_int(data.get("priority"), default_val=2)
+                if not ok_prio or prio is None:
+                    return jsonify({"ok": False, "message": "⚠️ Mức độ ưu tiên của việc cần nhớ phải là số nguyên (1–3)."}), 400
+                item = memory_store.add_task(title=title, due_text=due_hint, due_iso=due_iso, priority=prio)
+                if item is None:
+                    return jsonify({"ok": False, "message": "⚠️ Không thể lưu việc cần nhớ này."}), 400
+                return jsonify(
+                    {
+                        "ok": True,
+                        "kind": "task",
+                        "item": item,
+                        "counts": memory_store.get_counts(),
+                    }
+                ), 200
+
+            content = str(data.get("content") or "").strip()
+            if len(content) < 2:
+                return jsonify({"ok": False, "message": "⚠️ Vui lòng nhập nội dung ký ức cần lưu (ít nhất 2 ký tự)."}), 400
+            category = str(data.get("category") or "auto").strip().lower()
+            importance, ok_imp = _parse_optional_int(data.get("importance"), default_val=3)
+            if not ok_imp or importance is None:
+                return jsonify({"ok": False, "message": "⚠️ Độ quan trọng của ký ức phải là số nguyên (1–5)."}), 400
+            pinned = bool(data.get("pinned", False))
+            item = memory_store.upsert_memory(
+                content=content,
+                category=category,
+                importance=importance,
+                pinned=pinned,
+                source="manual",
+            )
+            if item is None:
+                return jsonify({"ok": False, "message": "⚠️ Không thể lưu ký ức này."}), 400
+            return jsonify(
+                {
+                    "ok": True,
+                    "kind": "memory",
+                    "item": item,
+                    "counts": memory_store.get_counts(),
+                }
+            ), 200
+
+        # DELETE /api/memories?kind=memories|tasks|done_tasks|all
+        data = request.get_json(silent=True) if request.is_json else {}
+        if not isinstance(data, dict):
+            data = {}
+        kind = str(request.args.get("kind") or data.get("kind") or "memories").strip().lower()
+        if kind in ("memories", "memory"):
+            deleted_count = memory_store.clear_all_memories()
+        elif kind in ("tasks", "task"):
+            deleted_count = memory_store.clear_all_tasks(only_done=False)
+        elif kind == "done_tasks":
+            deleted_count = memory_store.clear_all_tasks(only_done=True)
+        elif kind == "all":
+            deleted_count = memory_store.clear_all_memories() + memory_store.clear_all_tasks(only_done=False)
+        else:
+            return jsonify({"ok": False, "message": "⚠️ Loại bộ nhớ cần xóa không hợp lệ."}), 400
+
+        return jsonify(
+            {
+                "ok": True,
+                "kind": kind,
+                "deleted_count": deleted_count,
+                "counts": memory_store.get_counts(),
+            }
+        ), 200
+    except Exception:
+        return jsonify({"ok": False, "message": "⚠️ Có lỗi khi truy cập Bộ nhớ Wisp, thử lại nhé."}), 500
+
+
+@app.route("/api/memories/<string:kind>/<int:item_id>", methods=["PATCH", "DELETE"])
+def api_memory_item(kind: str, item_id: int):
+    """Cập nhật (ghim / sửa nội dung / đánh dấu hoàn thành) hoặc xóa từng mục Ký ức / Việc cần nhớ."""
+    try:
+        norm_kind = str(kind or "").strip().lower()
+        if norm_kind in ("memory", "memories"):
+            if request.method == "DELETE":
+                ok = memory_store.delete_memory(item_id)
+                if not ok:
+                    return jsonify({"ok": False, "message": "⚠️ Không tìm thấy ký ức cần xóa."}), 404
+                return jsonify({"ok": True, "deleted": True, "counts": memory_store.get_counts()}), 200
+
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                data = {}
+            content = None
+            if "content" in data and data["content"] is not None:
+                content = str(data["content"]).strip()
+                if len(content) < 2:
+                    return jsonify({"ok": False, "message": "⚠️ Nội dung ký ức phải có ít nhất 2 ký tự."}), 400
+            category = str(data["category"]).strip().lower() if "category" in data and data["category"] is not None else None
+            importance, ok_imp = _parse_optional_int(data.get("importance"), default_val=None) if "importance" in data else (None, True)
+            if not ok_imp:
+                return jsonify({"ok": False, "message": "⚠️ Độ quan trọng của ký ức phải là số nguyên (1–5)."}), 400
+            pinned = bool(data["pinned"]) if "pinned" in data and data["pinned"] is not None else None
+            updated = memory_store.update_memory(
+                memory_id=item_id,
+                content=content,
+                category=category,
+                importance=importance,
+                pinned=pinned,
+            )
+            if updated is None:
+                return jsonify({"ok": False, "message": "⚠️ Không tìm thấy ký ức cần cập nhật."}), 404
+            return jsonify({"ok": True, "kind": "memory", "item": updated, "counts": memory_store.get_counts()}), 200
+
+        if norm_kind in ("task", "tasks"):
+            if request.method == "DELETE":
+                ok = memory_store.delete_task(item_id)
+                if not ok:
+                    return jsonify({"ok": False, "message": "⚠️ Không tìm thấy việc cần nhớ cần xóa."}), 404
+                return jsonify({"ok": True, "deleted": True, "counts": memory_store.get_counts()}), 200
+
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                data = {}
+            title = None
+            if "title" in data and data["title"] is not None:
+                title = str(data["title"]).strip()
+                if len(title) < 2:
+                    return jsonify({"ok": False, "message": "⚠️ Tiêu đề việc cần nhớ phải có ít nhất 2 ký tự."}), 400
+            status = str(data["status"]).strip().lower() if "status" in data and data["status"] is not None else None
+            due_text = str(data["due_text"]).strip() if "due_text" in data and data["due_text"] is not None else None
+            due_iso = str(data["due_iso"]).strip() if "due_iso" in data and data["due_iso"] is not None else None
+            if due_text is not None and due_text and due_iso is None:
+                p_txt, p_iso = memory_store.parse_vietnamese_due_time(due_text)
+                if p_txt:
+                    due_text, due_iso = p_txt, p_iso
+            priority, ok_prio = _parse_optional_int(data.get("priority"), default_val=None) if "priority" in data else (None, True)
+            if not ok_prio:
+                return jsonify({"ok": False, "message": "⚠️ Mức độ ưu tiên của việc cần nhớ phải là số nguyên (1–3)."}), 400
+            updated = memory_store.update_task(
+                task_id=item_id,
+                title=title,
+                status=status,
+                due_text=due_text,
+                due_iso=due_iso,
+                priority=priority,
+            )
+            if updated is None:
+                return jsonify({"ok": False, "message": "⚠️ Không tìm thấy việc cần nhớ cần cập nhật."}), 404
+            return jsonify({"ok": True, "kind": "task", "item": updated, "counts": memory_store.get_counts()}), 200
+
+        return jsonify({"ok": False, "message": "⚠️ Loại dữ liệu bộ nhớ không hợp lệ."}), 400
+    except Exception:
+        return jsonify({"ok": False, "message": "⚠️ Có lỗi khi cập nhật Bộ nhớ Wisp, thử lại nhé."}), 500
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """Nhận tin nhắn từ người dùng, chuẩn hóa tiếng Việt và trả về câu trả lời của bot."""
@@ -706,7 +908,14 @@ def api_chat():
         prefs = data.get("prefs") if isinstance(data.get("prefs"), dict) else None
         normalized = normalize_vietnamese_input(message)
         reply = get_reply(normalized, prefs=prefs)
-        return jsonify({"reply": reply, "normalized": normalized, "profile": get_user_profile()}), 200
+        return jsonify(
+            {
+                "reply": reply,
+                "normalized": normalized,
+                "profile": get_user_profile(),
+                "memory_counts": memory_store.get_counts(),
+            }
+        ), 200
     except Exception:
         return jsonify({"reply": "⚠️ Có lỗi gì đó, thử lại nhé."}), 200
 
@@ -846,7 +1055,7 @@ def api_chat_stream():
                             if (
                                 not accumulated_text
                                 and re.match(
-                                    r"^(?:🌤️|🕐|📅|👋|🤖|🧹|⚠️|Gõ gì đó|Thời tiết hiện tại|Dự báo ngày mai|Bây giờ là|Bây giờ ở|Hôm nay là|Wisp đã xóa)",
+                                    r"^(?:🌤️|🕐|📅|👋|🤖|🧹|⚠️|📌|✅|🗑️|🧠|Gõ gì đó|Thời tiết hiện tại|Dự báo ngày mai|Dự báo thời tiết|Bây giờ là|Bây giờ ở|Hôm nay là|Wisp đã xóa)",
                                     delta_str.strip(),
                                 )
                             ):
@@ -860,6 +1069,8 @@ def api_chat_stream():
                                 continue
 
                             if not fast_path_handled:
+                                if re.match(r"^\s*(?:🌐\s*)?Nguồn:\s+", delta_str):
+                                    continue
                                 accumulated_text += delta_str
                                 fence_count = delta_str.count("```")
                                 if in_tts_code_fence:

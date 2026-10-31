@@ -785,6 +785,31 @@ const profAutoLearnToggle = document.getElementById("profAutoLearnToggle");
 const assistantMemoryToastEl = document.getElementById("assistantMemoryToast");
 const assistantMemoryToastTextEl = document.getElementById("assistantMemoryToastText");
 
+// Các phần tử Trung tâm Bộ nhớ Dài hạn 3 Tab (Milestone M4)
+const memoryCountBadgeEl = document.getElementById("memoryCountBadge");
+const memoryTabsBarEl = document.getElementById("memoryTabsBar");
+const memTabProfileBtn = document.getElementById("memTabProfileBtn");
+const memTabMemoriesBtn = document.getElementById("memTabMemoriesBtn");
+const memTabTasksBtn = document.getElementById("memTabTasksBtn");
+const memTabMemoriesCountEl = document.getElementById("memTabMemoriesCount");
+const memTabTasksCountEl = document.getElementById("memTabTasksCount");
+const memPaneProfileEl = document.getElementById("memPaneProfile");
+const memPaneMemoriesEl = document.getElementById("memPaneMemories");
+const memPaneTasksEl = document.getElementById("memPaneTasks");
+const memoryCategorySelectEl = document.getElementById("memoryCategorySelect");
+const memoryAddInputEl = document.getElementById("memoryAddInput");
+const memoryAddBtnEl = document.getElementById("memoryAddBtn");
+const memorySearchInputEl = document.getElementById("memorySearchInput");
+const memoryListContainerEl = document.getElementById("memoryListContainer");
+const memoryPaneStatusEl = document.getElementById("memoryPaneStatus");
+const clearAllMemoriesBtnEl = document.getElementById("clearAllMemoriesBtn");
+const taskAddInputEl = document.getElementById("taskAddInput");
+const taskAddBtnEl = document.getElementById("taskAddBtn");
+const taskListContainerEl = document.getElementById("taskListContainer");
+const taskPaneStatusEl = document.getElementById("taskPaneStatus");
+const clearDoneTasksBtnEl = document.getElementById("clearDoneTasksBtn");
+const clearAllTasksBtnEl = document.getElementById("clearAllTasksBtn");
+
 const voiceChatEl = document.getElementById("voiceChat");
 const voiceMicToggleBtn = document.getElementById("voiceMicToggleBtn");
 const voiceMicDot = document.getElementById("voiceMicDot");
@@ -1137,6 +1162,435 @@ if (resetProfileBtn) {
   });
 }
 
+/* ==========================================================================
+   TRUNG TÂM BỘ NHỚ WISP 3 TAB (HỒ SƠ · KÝ ỨC · VIỆC CẦN NHỚ) — /api/memories
+   ========================================================================== */
+
+const MEMORY_CATEGORY_LABELS = {
+  project: "Dự án",
+  preference: "Sở thích",
+  habit: "Thói quen",
+  health: "Sức khỏe",
+  skill: "Kỹ năng",
+  relationship: "Quan hệ",
+  fact: "Ghi chú",
+};
+
+let currentMemoryTab = "profile";
+let cachedMemoriesList = [];
+let cachedTasksList = [];
+let cachedMemoryCounts = {
+  memories_total: 0,
+  pinned_total: 0,
+  pending_tasks: 0,
+  done_tasks: 0,
+  tasks_total: 0,
+};
+let bgMemorySyncTimer = 0;
+
+function syncMemoryCountsUI(countsObj) {
+  if (countsObj && typeof countsObj === "object") {
+    cachedMemoryCounts = {
+      ...cachedMemoryCounts,
+      ...countsObj,
+    };
+  }
+  const memTotal = Number(cachedMemoryCounts.memories_total) || 0;
+  const pinnedTotal = Number(cachedMemoryCounts.pinned_total) || 0;
+  const pendingTasks = Number(cachedMemoryCounts.pending_tasks) || 0;
+  const doneTasks = Number(cachedMemoryCounts.done_tasks) || 0;
+  const badgeTotal = memTotal + pendingTasks;
+
+  if (memoryCountBadgeEl) {
+    memoryCountBadgeEl.textContent = String(badgeTotal);
+    if (badgeTotal > 0) {
+      memoryCountBadgeEl.removeAttribute("hidden");
+    } else {
+      memoryCountBadgeEl.setAttribute("hidden", "");
+    }
+  }
+  if (memTabMemoriesCountEl) {
+    memTabMemoriesCountEl.textContent = String(memTotal);
+  }
+  if (memTabTasksCountEl) {
+    memTabTasksCountEl.textContent = String(pendingTasks);
+  }
+  if (memoryPaneStatusEl) {
+    memoryPaneStatusEl.textContent =
+      pinnedTotal > 0
+        ? `${memTotal} ký ức dài hạn (${pinnedTotal} đã ghim)`
+        : `${memTotal} ký ức dài hạn`;
+  }
+  if (taskPaneStatusEl) {
+    taskPaneStatusEl.textContent =
+      doneTasks > 0
+        ? `${pendingTasks} việc đang chờ · ${doneTasks} đã xong`
+        : `${pendingTasks} việc đang chờ`;
+  }
+}
+
+function renderMemoryList() {
+  if (!memoryListContainerEl) return;
+  const rawQuery = memorySearchInputEl ? memorySearchInputEl.value.trim() : "";
+  const normQuery = stripVietnameseAccentsForMatch(rawQuery).toLowerCase();
+
+  const filtered = cachedMemoriesList.filter((item) => {
+    if (!item || typeof item.content !== "string") return false;
+    if (!normQuery) return true;
+    const contentLower = item.content.toLowerCase();
+    const contentNorm = stripVietnameseAccentsForMatch(item.content).toLowerCase();
+    const catLabel = MEMORY_CATEGORY_LABELS[item.category] || "Ghi chú";
+    const catNorm = stripVietnameseAccentsForMatch(catLabel).toLowerCase();
+    return (
+      contentLower.includes(rawQuery.toLowerCase()) ||
+      contentNorm.includes(normQuery) ||
+      catNorm.includes(normQuery)
+    );
+  });
+
+  if (filtered.length === 0) {
+    const emptyMsg = rawQuery
+      ? "Không tìm thấy ký ức nào khớp từ khóa."
+      : "Chưa có ký ức dài hạn nào. Hãy trò chuyện tự nhiên hoặc thêm ký ức ở trên.";
+    memoryListContainerEl.innerHTML = `<div class="memory-empty-state">${escapeHtmlText(emptyMsg)}</div>`;
+    return;
+  }
+
+  memoryListContainerEl.innerHTML = filtered
+    .map((item) => {
+      const id = Number(item.id);
+      const cat = String(item.category || "fact");
+      const catLabel = MEMORY_CATEGORY_LABELS[cat] || "Ghi chú";
+      const isPinned = Boolean(item.pinned);
+      return (
+        `<div class="memory-item-card${isPinned ? " pinned" : ""}" data-memory-id="${id}" role="listitem">` +
+        `<div class="memory-item-top">` +
+        `<span class="memory-cat-badge" data-cat="${escapeHtmlText(cat)}">${escapeHtmlText(catLabel)}</span>` +
+        `<div class="memory-item-actions">` +
+        `<button type="button" class="pin-btn${isPinned ? " active" : ""}" data-action="pin-memory" data-id="${id}" data-pinned="${isPinned ? "1" : "0"}" title="${isPinned ? "Bỏ ghim ưu tiên" : "Ghim ký ức này luôn ưu tiên"}">` +
+        `${isPinned ? "📌 Đã ghim" : "📌 Ghim"}` +
+        `</button>` +
+        `<button type="button" class="mem-delete-btn" data-action="delete-memory" data-id="${id}" title="Xóa ký ức này">Xóa</button>` +
+        `</div>` +
+        `</div>` +
+        `<div class="memory-item-content">${escapeHtmlText(item.content)}</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+}
+
+function renderTaskList() {
+  if (!taskListContainerEl) return;
+  if (!cachedTasksList || cachedTasksList.length === 0) {
+    taskListContainerEl.innerHTML =
+      `<div class="memory-empty-state">Chưa có việc cần nhớ nào. Bạn có thể nhắn “Nhắc mình chiều mai họp team”.</div>`;
+    return;
+  }
+
+  taskListContainerEl.innerHTML = cachedTasksList
+    .map((task) => {
+      const id = Number(task.id);
+      const isDone = task.status === "done";
+      const dueText = String(task.due_text || "").trim();
+      return (
+        `<div class="task-item-row${isDone ? " done" : ""}" data-task-id="${id}" role="listitem">` +
+        `<button type="button" class="task-check-btn${isDone ? " checked" : ""}" data-action="toggle-task" data-id="${id}" data-status="${isDone ? "done" : "pending"}" aria-label="${isDone ? "Mở lại việc" : "Đánh dấu hoàn thành"}" title="${isDone ? "Bấm để mở lại" : "Đánh dấu hoàn thành"}">` +
+        `${isDone ? "✓" : ""}` +
+        `</button>` +
+        `<div class="task-body">` +
+        `<span class="task-title-text">${escapeHtmlText(task.title || "")}</span>` +
+        (dueText ? `<span class="task-due-badge">⏰ ${escapeHtmlText(dueText)}</span>` : "") +
+        `</div>` +
+        `<button type="button" class="mem-delete-btn" data-action="delete-task" data-id="${id}" title="Xóa việc này">Xóa</button>` +
+        `</div>`
+      );
+    })
+    .join("");
+}
+
+async function fetchMemoriesState() {
+  try {
+    const res = await fetch("/api/memories");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data || data.ok === false) return;
+    if (Array.isArray(data.memories)) {
+      cachedMemoriesList = data.memories;
+    }
+    if (Array.isArray(data.tasks)) {
+      cachedTasksList = data.tasks;
+    }
+    if (data.counts) {
+      syncMemoryCountsUI(data.counts);
+    }
+    renderMemoryList();
+    renderTaskList();
+  } catch (_e) {}
+}
+
+function scheduleBackgroundMemorySync(delayMs = 1150) {
+  clearTimeout(bgMemorySyncTimer);
+  bgMemorySyncTimer = setTimeout(() => {
+    fetchMemoriesState();
+  }, delayMs);
+}
+
+function switchMemoryTab(tabName) {
+  const validTab = ["profile", "memories", "tasks"].includes(tabName) ? tabName : "profile";
+  currentMemoryTab = validTab;
+
+  [
+    [memTabProfileBtn, memPaneProfileEl, "profile"],
+    [memTabMemoriesBtn, memPaneMemoriesEl, "memories"],
+    [memTabTasksBtn, memPaneTasksEl, "tasks"],
+  ].forEach(([btn, pane, key]) => {
+    const isActive = key === validTab;
+    if (btn) {
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    }
+    if (pane) {
+      if (isActive) {
+        pane.removeAttribute("hidden");
+      } else {
+        pane.setAttribute("hidden", "");
+      }
+    }
+  });
+
+  if (resetProfileBtn) {
+    resetProfileBtn.style.display = validTab === "profile" ? "" : "none";
+  }
+
+  if (validTab === "memories" || validTab === "tasks") {
+    fetchMemoriesState();
+  }
+}
+
+async function handleAddMemoryFromPanel() {
+  if (!memoryAddInputEl) return;
+  const content = memoryAddInputEl.value.trim();
+  if (!content) {
+    memoryAddInputEl.focus();
+    return;
+  }
+  const category = memoryCategorySelectEl ? memoryCategorySelectEl.value : "auto";
+  try {
+    const res = await fetch("/api/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "memory", content, category }),
+    });
+    const data = await res.json();
+    if (res.ok && data && data.ok) {
+      memoryAddInputEl.value = "";
+      if (data.counts) syncMemoryCountsUI(data.counts);
+      await fetchMemoriesState();
+      showAssistantMemoryToast("🧠 Đã lưu vào Ký ức dài hạn của Wisp");
+    }
+  } catch (_e) {}
+}
+
+async function handleAddTaskFromPanel() {
+  if (!taskAddInputEl) return;
+  const title = taskAddInputEl.value.trim();
+  if (!title) {
+    taskAddInputEl.focus();
+    return;
+  }
+  try {
+    const res = await fetch("/api/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "task", title }),
+    });
+    const data = await res.json();
+    if (res.ok && data && data.ok) {
+      taskAddInputEl.value = "";
+      if (data.counts) syncMemoryCountsUI(data.counts);
+      await fetchMemoriesState();
+      const dueSuffix = data.item && data.item.due_text ? ` (${data.item.due_text})` : "";
+      showAssistantMemoryToast(`📌 Đã thêm việc cần nhớ${dueSuffix}`);
+    }
+  } catch (_e) {}
+}
+
+if (memoryTabsBarEl) {
+  memoryTabsBarEl.addEventListener("click", (e) => {
+    const btn = e.target.closest(".mem-tab-pill[data-mem-tab]");
+    if (!btn) return;
+    e.stopPropagation();
+    switchMemoryTab(btn.getAttribute("data-mem-tab"));
+  });
+}
+
+if (memoryAddBtnEl) {
+  memoryAddBtnEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    handleAddMemoryFromPanel();
+  });
+}
+
+if (memoryAddInputEl) {
+  memoryAddInputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      handleAddMemoryFromPanel();
+    }
+  });
+}
+
+if (memorySearchInputEl) {
+  memorySearchInputEl.addEventListener("input", () => {
+    renderMemoryList();
+  });
+}
+
+if (memoryListContainerEl) {
+  memoryListContainerEl.addEventListener("click", async (e) => {
+    const actionBtn = e.target.closest("button[data-action]");
+    if (!actionBtn) return;
+    e.stopPropagation();
+    const action = actionBtn.getAttribute("data-action");
+    const id = Number(actionBtn.getAttribute("data-id"));
+    if (!Number.isFinite(id) || id <= 0) return;
+
+    if (action === "pin-memory") {
+      const currentlyPinned = actionBtn.getAttribute("data-pinned") === "1";
+      try {
+        const res = await fetch(`/api/memories/memory/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pinned: !currentlyPinned }),
+        });
+        const data = await res.json();
+        if (res.ok && data && data.ok) {
+          if (data.counts) syncMemoryCountsUI(data.counts);
+          await fetchMemoriesState();
+          showAssistantMemoryToast(!currentlyPinned ? "📌 Đã ghim ưu tiên ký ức" : "Đã bỏ ghim ký ức");
+        }
+      } catch (_err) {}
+    } else if (action === "delete-memory") {
+      try {
+        const res = await fetch(`/api/memories/memory/${id}`, { method: "DELETE" });
+        const data = await res.json();
+        if (res.ok && data && data.ok) {
+          if (data.counts) syncMemoryCountsUI(data.counts);
+          await fetchMemoriesState();
+          showAssistantMemoryToast("🗑️ Đã xóa ký ức khỏi Bộ nhớ Wisp");
+        }
+      } catch (_err) {}
+    }
+  });
+}
+
+if (clearAllMemoriesBtnEl) {
+  clearAllMemoriesBtnEl.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!cachedMemoriesList.length) return;
+    try {
+      const res = await fetch("/api/memories?kind=memories", { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok && data && data.ok) {
+        if (data.counts) syncMemoryCountsUI(data.counts);
+        await fetchMemoriesState();
+        showAssistantMemoryToast("🗑️ Đã xóa toàn bộ ký ức dài hạn");
+      }
+    } catch (_err) {}
+  });
+}
+
+if (taskAddBtnEl) {
+  taskAddBtnEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    handleAddTaskFromPanel();
+  });
+}
+
+if (taskAddInputEl) {
+  taskAddInputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      handleAddTaskFromPanel();
+    }
+  });
+}
+
+if (taskListContainerEl) {
+  taskListContainerEl.addEventListener("click", async (e) => {
+    const actionBtn = e.target.closest("button[data-action]");
+    if (!actionBtn) return;
+    e.stopPropagation();
+    const action = actionBtn.getAttribute("data-action");
+    const id = Number(actionBtn.getAttribute("data-id"));
+    if (!Number.isFinite(id) || id <= 0) return;
+
+    if (action === "toggle-task") {
+      const curStatus = actionBtn.getAttribute("data-status");
+      const nextStatus = curStatus === "done" ? "pending" : "done";
+      try {
+        const res = await fetch(`/api/memories/task/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: nextStatus }),
+        });
+        const data = await res.json();
+        if (res.ok && data && data.ok) {
+          if (data.counts) syncMemoryCountsUI(data.counts);
+          await fetchMemoriesState();
+          showAssistantMemoryToast(nextStatus === "done" ? "✅ Đã hoàn thành công việc" : "Đã mở lại công việc");
+        }
+      } catch (_err) {}
+    } else if (action === "delete-task") {
+      try {
+        const res = await fetch(`/api/memories/task/${id}`, { method: "DELETE" });
+        const data = await res.json();
+        if (res.ok && data && data.ok) {
+          if (data.counts) syncMemoryCountsUI(data.counts);
+          await fetchMemoriesState();
+          showAssistantMemoryToast("🗑️ Đã xóa việc cần nhớ");
+        }
+      } catch (_err) {}
+    }
+  });
+}
+
+if (clearDoneTasksBtnEl) {
+  clearDoneTasksBtnEl.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const hasDone = cachedTasksList.some((t) => t && t.status === "done");
+    if (!hasDone) return;
+    try {
+      const res = await fetch("/api/memories?kind=done_tasks", { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok && data && data.ok) {
+        if (data.counts) syncMemoryCountsUI(data.counts);
+        await fetchMemoriesState();
+        showAssistantMemoryToast("🧹 Đã dọn các việc đã hoàn thành");
+      }
+    } catch (_err) {}
+  });
+}
+
+if (clearAllTasksBtnEl) {
+  clearAllTasksBtnEl.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!cachedTasksList.length) return;
+    try {
+      const res = await fetch("/api/memories?kind=tasks", { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok && data && data.ok) {
+        if (data.counts) syncMemoryCountsUI(data.counts);
+        await fetchMemoriesState();
+        showAssistantMemoryToast("🗑️ Đã xóa toàn bộ danh sách việc cần nhớ");
+      }
+    } catch (_err) {}
+  });
+}
+
+fetchMemoriesState();
+
 if (userProfileBtn && userProfilePanel) {
   userProfileBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1147,6 +1601,7 @@ if (userProfileBtn && userProfilePanel) {
         if (aiConfigBtn) aiConfigBtn.setAttribute("aria-expanded", "false");
       }
       revertUserProfileFormInputs();
+      fetchMemoriesState();
       userProfilePanel.removeAttribute("hidden");
       userProfilePanel.classList.add("active");
       userProfileBtn.setAttribute("aria-expanded", "true");
@@ -1156,7 +1611,12 @@ if (userProfileBtn && userProfilePanel) {
   });
 
   document.addEventListener("click", (e) => {
-    if (!userProfilePanel.hasAttribute("hidden") && userProfileWrap && !userProfileWrap.contains(e.target)) {
+    if (
+      !userProfilePanel.hasAttribute("hidden") &&
+      userProfileWrap &&
+      document.contains(e.target) &&
+      !userProfileWrap.contains(e.target)
+    ) {
       closeUserProfilePanel(true);
     }
   });
@@ -1338,9 +1798,11 @@ function setOrbVisualState(state, customCaption, energy = 1) {
 }
 
 function stripCodeForVoiceSubtitle(text) {
-  const raw = String(text ?? "");
-  if (!raw.includes("```")) return raw;
-  const cleaned = raw
+  let cleaned = String(text ?? "");
+  cleaned = cleaned.replace(/(?:^|\n)+\s*(?:🌐\s*)?Nguồn:\s+[^\n]+/g, "");
+  cleaned = cleaned.replace(/\[([^\[\]\n]+)\]\(https?:\/\/[^\s\x29]+\)/gi, "$1");
+  if (!cleaned.includes("```")) return cleaned.trim();
+  cleaned = cleaned
     .replace(/(`{3,})[\s\S]*?(?:\1`*|$)/g, " [Đã hiển thị mã nguồn trên khung chat] ")
     .replace(/\s+/g, " ")
     .trim();
@@ -1661,6 +2123,17 @@ function escapeHtmlText(raw) {
     .replace(/'/g, "&#39;");
 }
 
+function sanitizeMarkdownHref(escapedUrl) {
+  const candidate = String(escapedUrl || "").trim().replace(/&#39;/g, "%27");
+  if (!/^https?:\/\/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+$/i.test(candidate)) {
+    return "";
+  }
+  if (/(&quot;|&#39;|&lt;|&gt;)/i.test(candidate)) {
+    return "";
+  }
+  return candidate;
+}
+
 function formatInlineSafeMarkdown(rawSegment) {
   const inlineParts = String(rawSegment).split(/(``(?:(?!``)[^\n])+``|`[^`\n]+`)/g);
   return inlineParts
@@ -1675,7 +2148,16 @@ function formatInlineSafeMarkdown(rawSegment) {
         return `<code class="inline-code">${innerCode}</code>`;
       }
       const escaped = escapeHtmlText(piece);
-      return escaped.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+      const withLinks = escaped.replace(
+        /\[((?:\[[^\[\]\n]*\]|[^\[\]\n])+)\]\(((?:[^()\s]+|\((?:[^()\s]+|\([^()\s]*\))*\))+)\)/g,
+        (fullMatch, escapedLabel, escapedUrl) => {
+          const safeHref = sanitizeMarkdownHref(escapedUrl);
+          if (!safeHref) return fullMatch;
+          const labelHtml = escapedLabel.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+          return `<a class="chat-md-link" href="${safeHref}" target="_blank" rel="noopener noreferrer">${labelHtml}</a>`;
+        }
+      );
+      return withLinks.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
     })
     .join("");
 }
@@ -2350,23 +2832,28 @@ function enqueueSpeechChunk(rawSegmentText, forceSpeak = false) {
 function feedStreamingTextToTTS(accumulatedText, isFinalFlush = false) {
   if (currentAppMode !== "voice") return;
 
+  const speechSafeText = String(accumulatedText || "").replace(
+    /(?:^|\n+)\s*(?:🌐\s*)?Nguồn:\s*[\s\S]*$/,
+    ""
+  );
+
   if (isFinalFlush) {
-    const remaining = accumulatedText.slice(ttsSpokenCharIndex);
-    ttsSpokenCharIndex = accumulatedText.length;
+    const remaining = speechSafeText.slice(ttsSpokenCharIndex);
+    ttsSpokenCharIndex = speechSafeText.length;
     if (remaining.trim()) {
       enqueueSpeechChunk(remaining);
     }
     return;
   }
 
-  if (/^(?:🌤️|🕐|📅|👋|🤖|🧹)/.test(accumulatedText.trim())) {
+  if (/^(?:🌤️|🕐|📅|👋|🤖|🧹)/.test(speechSafeText.trim())) {
     return;
   }
 
   const safeSentenceBoundary = /^([\s\S]{20,}?(?<![0-9])[.!?。]+[\s\n]+|[\s\S]{28,}?[,;:]\s+)/;
 
   while (true) {
-    const unspoken = accumulatedText.slice(ttsSpokenCharIndex);
+    const unspoken = speechSafeText.slice(ttsSpokenCharIndex);
     const match = unspoken.match(safeSentenceBoundary);
     if (!match || !match[1]) break;
     const chunk = match[1];
@@ -3205,6 +3692,14 @@ async function sendMessage(presetText) {
           if (labels.length > 0) {
             showAssistantMemoryToast(`✨ Wisp đã nhớ vào Hồ sơ: ${labels.join(" · ")}`);
           }
+        } else if (evt.type === "memory_updated") {
+          if (evt.counts) {
+            syncMemoryCountsUI(evt.counts);
+          }
+          if (typeof evt.toast === "string" && evt.toast.trim()) {
+            showAssistantMemoryToast(evt.toast.trim());
+          }
+          fetchMemoriesState();
         } else if (evt.type === "state" && evt.state) {
           if (!isSpeakingTTS) {
             setOrbVisualState(evt.state, evt.label, 1.08);
@@ -3287,6 +3782,9 @@ async function sendMessage(presetText) {
         localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(data.profile));
         syncUserProfileUI(data.profile);
       }
+      if (data && data.memory_counts) {
+        syncMemoryCountsUI(data.memory_counts);
+      }
       if (data && typeof data.normalized === "string" && data.normalized.trim()) {
         updateUnifiedUserTurnText(userTurn, data.normalized);
       }
@@ -3304,6 +3802,8 @@ async function sendMessage(presetText) {
       botTurn = renderBotMessageInstant(FALLBACK_ERROR, botTurn);
     }
   }
+
+  scheduleBackgroundMemorySync(1150);
 
   if (currentAppMode === "voice") {
     await waitForSpeechToFinish();
@@ -3613,6 +4113,10 @@ async function handleChatContainerClick(e) {
     return;
   }
 
+  if (e.target.closest("a.chat-md-link")) {
+    return;
+  }
+
   if (e.target.closest("pre, .code-block")) {
     return;
   }
@@ -3652,6 +4156,8 @@ window.clearAllConversationHistory = clearAllConversationHistory;
 window.normalizeVietnameseClientInput = normalizeVietnameseClientInput;
 window.formatSafeMessageHtml = formatSafeMessageHtml;
 window.evaluateHandsFreeVoiceBargeIn = evaluateHandsFreeVoiceBargeIn;
+window.switchMemoryTab = switchMemoryTab;
+window.fetchMemoriesState = fetchMemoriesState;
 window.__wispVoiceDebug = {
   setSpeakingState(speaking, startedAtMs = 0) {
     isSpeakingTTS = Boolean(speaking);

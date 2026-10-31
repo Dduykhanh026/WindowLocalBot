@@ -6,6 +6,7 @@ và tự động Fallback về AI Local qua Ollama (qwen2.5:3b) khi mất mạng
 """
 import json
 import os
+import queue
 import re
 import socket
 import threading
@@ -16,7 +17,8 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from weather import CITY_ALIASES, get_current_weather, get_tomorrow_weather
+import memory_store
+from weather import CITY_ALIASES, get_current_weather, get_multi_day_weather, get_tomorrow_weather
 
 try:
     VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -60,6 +62,8 @@ GEMINI_MODELS = (
 )
 # Lưu thời điểm (monotonic) mà một model Gemini đang bị giới hạn quota (429) hoặc quá tải (503) để bỏ qua ngay lập tức (0ms)
 _GEMINI_COOLDOWN_UNTIL: dict[str, float] = {}
+# Lưu thời điểm (monotonic) tạm tắt công cụ google_search khi gói Free-Tier hết quota Search Grounding (429/403 riêng cho tool)
+_GEMINI_WEB_SEARCH_COOLDOWN_UNTIL: float = 0.0
 # Ngắt mạch kết nối nhanh khi mất mạng toàn cục (DNS/Socket/Unreachable) để failover sang Ollama trong <1s
 _GEMINI_NETWORK_OFFLINE_UNTIL: float = 0.0
 
@@ -88,6 +92,10 @@ OLLAMA_WAITING_MSG = (
 # Lịch sử hội thoại ngắn lưu trong RAM với khóa bảo vệ an toàn đa luồng (thread-safety)
 _CHAT_HISTORY: list[dict[str, str]] = []
 _CHAT_HISTORY_LOCK = threading.Lock()
+_CHAT_SESSION_EPOCH: int = 0
+_PENDING_OVERFLOW_TURNS: list[dict[str, str]] = []
+_COMPACTION_SCHEDULED: bool = False
+_MEMORY_BG_QUEUE: queue.Queue = queue.Queue()
 
 WEEKDAY_VI = [
     "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm",
@@ -223,9 +231,10 @@ def _is_weather_topic(raw_text: str, text_norm: str) -> bool:
     if re.search(r"\b(?:lanh|ret|nong)\b", n) and re.search(r"\b(?:troi|hom nay|ngay mai|thoi tiet|khi hau|rat|hoi)\s+(?:lanh|ret|nong)\b", n):
         return True
 
-    # 4. Câu hỏi nối tiếp ngắn về ngày mai (vd: "ngày mai thế nào?", "còn ngày mai?") ngay sau lượt hỏi thời tiết
-    if len(n.split()) <= 7 and re.search(
-        r"\b(?:ngay\s+mai|tomorrow)\b.*\b(?:the\s+nao|ra\s+sao|sao\s+roi)\b|\b(?:con|vay|the)\s+ngay\s+mai\b",
+    # 4. Câu hỏi nối tiếp ngắn về ngày mai / ngày mốt / cuối tuần / N ngày tới ngay sau lượt hỏi thời tiết
+    if len(n.split()) <= 8 and re.search(
+        r"\b(?:ngay\s+mai|tomorrow|ngay\s+mot|cuoi\s+tuan(?:\s+nay|\s+sau)?|\d+\s*ngay\s+toi)\b.*\b(?:the\s+nao|ra\s+sao|sao\s+roi)\b"
+        r"|\b(?:con|vay|the)\s+(?:ngay\s+mai|ngay\s+mot|cuoi\s+tuan(?:\s+nay|\s+sau)?|\d+\s*ngay\s+toi)\b",
         n,
     ):
         with _CHAT_HISTORY_LOCK:
@@ -476,9 +485,13 @@ def _extract_city_after(text_norm: str, keywords: list[str]) -> str:
         if kw_n in t:
             t = t.split(kw_n, 1)[1]
             break
-    # Bỏ các từ thừa, từ đệm câu hỏi và các cụm từ tư vấn không thuộc về địa danh
+    # Bỏ các mốc thời gian nhiều ngày (3 ngày tới, cuối tuần này, thứ Bảy, ngày mốt...)
+    t = re.sub(r"\b\d{1,2}\s*ngay\s*(?:toi|nua|tiep\s+theo|sap\s+toi|qua)?\b", " ", t)
     t = re.sub(
-        r"\b(o|tai|thanh pho|tinh|hien tai|bay gio|hom nay|ngay mai|tomorrow|"
+        r"\b(du\s+bao|thoi\s+tiet|ngay\s+mot|ngay\s+kia|cuoi\s+tuan(?:\s+(?:nay|sau|toi))?|"
+        r"ca\s+tuan|trong\s+tuan|tuan\s+(?:nay|sau|toi)|"
+        r"thu\s*(?:hai|ba|tu|bon|nam|sau|bay|[2-7])(?:\s+(?:nay|sau|toi))?|chu\s*nhat(?:\s+(?:nay|sau|toi))?|"
+        r"o|tai|thanh pho|tinh|hien tai|bay gio|hom nay|ngay mai|tomorrow|sap\s+toi|tiep\s+theo|"
         r"the nao|nhu the nao|ra sao|sao roi|bao nhieu do|may do|nhiet do bao nhieu|"
         r"mac gi|an gi|di dau|choi gi|outfit|mang gi|mang o|ao mua|ao khoac|co mua khong|co nang khong|"
         r"nhi|vay|the|nhe|nha|di|a|ha|coi|voi|wisp|oi)\b",
@@ -487,6 +500,93 @@ def _extract_city_after(text_norm: str, keywords: list[str]) -> str:
     )
     t = re.sub(r"\s+", " ", t).strip(" ,.?!;:\"'“”")
     return t
+
+
+def _parse_weather_day_plan(raw_text: str, text_norm: str, now_dt: datetime | None = None) -> dict:
+    """
+    Phân tích mốc ngày người dùng hỏi thời tiết:
+    - "current": hôm nay / hiện tại
+    - "tomorrow": ngày mai
+    - "multi": ngày mốt, cuối tuần này, cuối tuần sau, thứ cụ thể trong tuần, hoặc N ngày tới (tối đa 7–14 ngày)
+    """
+    now = now_dt or datetime.now(VN_TZ)
+    n = text_norm or _norm(raw_text or "")
+    cur_wd = now.weekday()
+
+    # 1. N ngày tới / N ngày tiếp theo (VD: "3 ngày tới", "5 ngày tới", "7 ngày")
+    m_ndays = re.search(r"\b(\d{1,2})\s*ngay\s*(?:toi|nua|tiep\s+theo|sap\s+toi)?\b", n)
+    if m_ndays:
+        n_days = max(1, min(14, int(m_ndays.group(1))))
+        if n_days == 1:
+            return {"mode": "current", "days": 1, "target_offsets": [0]}
+        return {"mode": "multi", "days": n_days, "target_offsets": list(range(n_days))}
+
+    # 2. Cuối tuần sau / cuối tuần tới
+    if re.search(r"\bcuoi\s+tuan\s+(?:sau|toi)\b", n):
+        days_to_next_mon = 7 - cur_wd
+        sat_off = days_to_next_mon + 5
+        sun_off = days_to_next_mon + 6
+        return {"mode": "multi", "days": sun_off + 1, "target_offsets": [sat_off, sun_off]}
+
+    # 3. Cuối tuần / cuối tuần này
+    if re.search(r"\bcuoi\s+tuan(?:\s+nay)?\b", n):
+        if cur_wd <= 4:
+            offsets = [5 - cur_wd, 6 - cur_wd]
+        elif cur_wd == 5:
+            offsets = [0, 1]
+        else:
+            offsets = [0] if "nay" in n else [6, 7]
+        return {"mode": "multi", "days": max(offsets) + 1, "target_offsets": offsets}
+
+    # 4. Ngày mốt / ngày kia
+    if re.search(r"\b(ngay\s+mot|ngay\s+kia)\b", n):
+        return {"mode": "multi", "days": 3, "target_offsets": [2]}
+
+    # 5. Thứ cụ thể trong tuần (VD: "thứ Bảy này", "Chủ Nhật", "thứ Hai tuần sau")
+    weekday_patterns = (
+        (r"\bthu\s*(?:hai|2)\b", 0),
+        (r"\bthu\s*(?:ba|3)\b", 1),
+        (r"\bthu\s*(?:tu|bon|4)\b", 2),
+        (r"\bthu\s*(?:nam|5)\b", 3),
+        (r"\bthu\s*(?:sau|6)\b", 4),
+        (r"\bthu\s*(?:bay|7)\b", 5),
+        (r"\bchu\s*nhat\b", 6),
+    )
+    for pat, wd_idx in weekday_patterns:
+        if re.search(pat, n):
+            if re.search(r"\btuan\s+(?:sau|toi)\b", n):
+                off = (7 - cur_wd) + wd_idx
+            else:
+                off = (wd_idx - cur_wd) % 7
+            if off == 1 and not re.search(r"\btuan\s+(?:sau|toi)\b", n):
+                # Nếu vẫn muốn hiển thị rõ thứ/ngày cho ngày được hỏi theo thứ, dùng multi 1-ngày
+                return {"mode": "multi", "days": 7, "target_offsets": [off]}
+            return {"mode": "multi", "days": max(7, off + 1), "target_offsets": [off]}
+
+    # 6. Cả tuần / dự báo tuần này / tuần tới
+    if re.search(r"\b(ca\s+tuan|trong\s+tuan|tuan\s+nay|tuan\s+sau|tuan\s+toi)\b", n):
+        return {"mode": "multi", "days": 7, "target_offsets": None}
+
+    # 7. Ngày mai
+    if "ngay mai" in n or "tomorrow" in n:
+        return {"mode": "tomorrow", "days": 2, "target_offsets": [1]}
+
+    return {"mode": "current", "days": 1, "target_offsets": [0]}
+
+
+def _get_weather_for_query(
+    city: str,
+    raw_text: str,
+    text_norm: str,
+    now_dt: datetime | None = None,
+) -> str:
+    """Lấy dữ liệu thời tiết đúng mốc ngày (hiện tại / ngày mai / 7 ngày) cho cả Fast-path và System Context."""
+    plan = _parse_weather_day_plan(raw_text, text_norm, now_dt=now_dt)
+    if plan["mode"] == "tomorrow":
+        return get_tomorrow_weather(city)
+    if plan["mode"] == "multi":
+        return get_multi_day_weather(city, days=plan["days"], target_offsets=plan["target_offsets"])
+    return get_current_weather(city)
 
 
 # Lưu trữ Hồ sơ Cá nhân của chủ nhân (Persistent Assistant Memory)
@@ -668,33 +768,44 @@ def _is_preceded_by_possessive(text: str, start_pos: int) -> bool:
     """
     Kiểm tra xem vị trí bắt đầu của đại từ ngôi thứ nhất có bị chi phối bởi quan hệ sở hữu / người thứ 3:
     1. Lời chào xã giao (vd: 'Chào bạn mình 26 tuổi'): không chặn.
-    2. Cấu trúc '... của' (vd: 'Bố của mình', 'Chó của mình'): chặn toàn bộ, trừ danh từ chỉ thuộc tính người dùng
-       (chiều cao, cân nặng, năm sinh, tuổi, tên).
-    3. Cấu trúc sở hữu đẳng lập và thân tộc mở rộng (vd: 'Con gái mình', 'Bạn thân mình', 'Bé nhà mình', 'Xe mình').
+    2. Cấu trúc '... của' / '... cua' (vd: 'Bố của mình', 'ban than cua minh'): chặn toàn bộ, trừ danh từ chỉ thuộc tính người dùng.
+    3. Cấu trúc sở hữu đẳng lập và thân tộc mở rộng có dấu & không dấu (vd: 'Con gái mình', 'ban than minh', 'sep minh').
     """
     prefix = text[:start_pos].rstrip()
     if not prefix:
         return False
 
     # 1. Bỏ qua lời chào xã giao hướng tới listener khi người dùng không gõ dấu phẩy
-    if re.search(r"\b(?:chào|chao|hi|hello|alo|ê|hey)\s+(?:bạn|anh|em|bot)$", prefix, flags=re.IGNORECASE):
+    if re.search(r"\b(?:chào|chao|hi|hello|alo|ê|e|hey)\s+(?:bạn|ban|anh|em|bot)$", prefix, flags=re.IGNORECASE):
         return False
 
-    # 2. Xử lý giới từ sở hữu 'của'
-    if re.search(r"\bcủa$", prefix, flags=re.IGNORECASE):
-        # Cho phép nếu là thuộc tính chính chủ của người dùng
+    prefix_norm = _norm(prefix)
+
+    # 2. Xử lý giới từ sở hữu 'của' (cả có dấu và không dấu)
+    if re.search(r"\bcủa$", prefix, flags=re.IGNORECASE) or re.search(r"\bcua$", prefix_norm):
         if re.search(
-            r"\b(?:chiều\s+cao|cân\s+nặng|năm\s+sinh|tuổi|tên)"
-            r"(?:\s+(?:hiện\s+tại|chính\s+xác|thực\s+tế))?\s+của$",
-            prefix,
-            flags=re.IGNORECASE,
+            r"\b(?:chieu\s+cao|can\s+nang|nam\s+sinh|tuoi|ten)"
+            r"(?:\s+(?:hien\s+tai|chinh\s+xac|thuc\s+te))?\s+cua$",
+            prefix_norm,
         ):
             return False
         return True
 
-    # 3. Xử lý danh từ thân tộc, quan hệ xã hội, vật nuôi, tài sản (hỗ trợ cả biến thể '... nhà')
+    # 3. Xử lý danh từ thân tộc, quan hệ xã hội, vật nuôi, tài sản (có dấu & không dấu)
     rel_pattern = rf"\b{_RELATIVE_NOUNS}(?:\s+nhà)?$"
-    return bool(re.search(rel_pattern, prefix, flags=re.IGNORECASE))
+    if re.search(rel_pattern, prefix, flags=re.IGNORECASE):
+        return True
+
+    unaccented_rel_pattern = (
+        r"\b(?:ban(?:\s+(?:than|be|gai|trai|cung\s+phong|cung\s+lop))?|"
+        r"nguoi\s+yeu(?:\s+cu)?|crush|vo|chong|ba\s+xa|ong\s+xa|"
+        r"(?:bo|ba|cha|me|ma)(?:\s+(?:chong|vo|ruot|nuoi))?|"
+        r"(?:anh|chi|em)(?:\s+(?:ruot|ho|dau|re|trai|gai))?|"
+        r"(?:con|chau|be)(?:\s+(?:gai|trai|nho|cung))?|"
+        r"ong|ba|bac|chu|co|di|cau|mo|sep|dong\s+nghiep|nhan\s+vien|"
+        r"thay(?:\s+giao)?|co\s+giao|cho|meo|thu\s+cung|pet)(?:\s+nha)?$"
+    )
+    return bool(re.search(unaccented_rel_pattern, prefix_norm))
 
 
 def extract_and_update_profile_from_message(raw_message: str) -> dict[str, str]:
@@ -862,19 +973,6 @@ def extract_and_update_profile_from_message(raw_message: str) -> dict[str, str]:
     if m_job:
         updated["job"] = m_job.group(1).strip()
 
-    # 7. Ghi chú / Thói quen / Lưu ý sức khỏe
-    m_note = re.search(
-        r"(?:ghi\s+nhớ\s+(?:giúp\s+mình|cho\s+mình|nhé)?\s*[:,-]?\s*)(.+)$",
-        msg,
-        flags=re.IGNORECASE,
-    )
-    if m_note:
-        note_str = m_note.group(1).strip(" .!")
-        if 3 <= len(note_str) <= 120:
-            existing = str(prof.get("notes") or "").strip()
-            if note_str.lower() not in existing.lower():
-                updated["notes"] = f"{existing}; {note_str}".strip("; ") if existing else note_str
-
     if updated:
         # Chỉ lưu nếu thực sự có giá trị thay đổi so với hồ sơ hiện tại
         real_changes = {k: v for k, v in updated.items() if str(prof.get(k) or "") != str(v)}
@@ -882,6 +980,748 @@ def extract_and_update_profile_from_message(raw_message: str) -> dict[str, str]:
             update_user_profile(real_changes)
             return real_changes
     return {}
+
+
+# ==============================================================================
+# TRÍ NHỚ DÀI HẠN 2 TẦNG (SQLITE) & TÓM TẮT CUỘN HỘI THOẠI DÀI
+# ==============================================================================
+
+_FENCED_CODE_BLOCK_RE = re.compile(r"(`{3,})[\s\S]*?(?:\1`*|$)")
+_INLINE_CODE_UNWRAP_RE = re.compile(r"``((?:(?!``)[^\n])+)``|`([^`\n]+)`")
+
+_VN_PROSE_OR_CMD_LEAD_RE = re.compile(
+    r"^(?:(?:ê|e|alo|chào|chao|hi|hello)\s+)?(?:wisp\s+)?(?:ơi\s+|oi\s+)?"
+    r"(?:hãy\s+|hay\s+|nhớ\s+|nho\s+|làm\s+ơn\s+|lam\s+on\s+)?"
+    r"(?:nhắc|nhac|thêm|them|tạo|tao|lưu|luu|xong|làm\s+xong|lam\s+xong|"
+    r"hoàn\s+thành|hoan\s+thanh|đánh\s+dấu|danh\s+dau|quên|quen|xóa|xoa|"
+    r"đừng\s+nhớ|dung\s+nho|ghi\s+nhớ|ghi\s+nho|mình|minh|tôi|toi)\b",
+    flags=re.IGNORECASE,
+)
+
+_RAW_CODE_START_RE = re.compile(
+    r"^\s*(?:let|var|const|func|function|def|class|struct|enum|extension|protocol|interface|type|typedef|"
+    r"import|export|return|yield|if|for|while|switch|case|guard|async|await|try|catch|finally|throw|"
+    r"public|private|protected|static|final|void|int|double|float|bool|String|Widget|"
+    r"@[A-Za-z_]\w*|//|/\*|\*/|#include|#define|#pragma|<\?[A-Za-z]|</?[A-Za-z][A-Za-z0-9_.-]*(?:\s|>|/>))",
+)
+
+_QUESTION_CLAUSE_RE = re.compile(
+    r"\?\s*$|\b(?:là\s+gì|tên\s+gì|tên\s+là\s+gì|ăn\s+gì|uống\s+gì|mặc\s+gì|làm\s+gì|"
+    r"việc\s+gì|cái\s+gì|ở\s+đâu|khi\s+nào|bao\s+giờ|mấy\s+giờ|bao\s+nhiêu|thế\s+nào|"
+    r"ra\s+sao|như\s+thế\s+nào|có\s+nhớ\s+không|nhớ\s+gì|không\s+nhỉ|chưa\s+nhỉ|sao\s+nhỉ|"
+    r"la\s+gi|ten\s+gi|ten\s+la\s+gi|an\s+gi|uong\s+gi|mac\s+gi|lam\s+gi|viec\s+gi|"
+    r"cai\s+gi|o\s+dau|khi\s+nao|bao\s+gio|may\s+gio|bao\s+nhieu|the\s+nao|nhu\s+the\s+nao|"
+    r"co\s+nho\s+khong|nho\s+gi|khong\s+nhi|chua\s+nhi|sao\s+nhi)\b",
+    flags=re.IGNORECASE,
+)
+
+_LEADING_TASK_TIME_RE = re.compile(
+    r"^(?:(?:vào|vao|lúc|luc|tầm|tam|khoảng|khoang)\s+)?(?:(?:buổi|buoi)\s+)?"
+    r"(?:"
+    r"(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)\s+"
+    r"(?:hôm\s+nay|hom\s+nay|ngày\s+mai|ngay\s+mai|ngày\s+mốt|ngay\s+mot|mai|mốt|mot|nay|"
+    r"(?:thứ|thu)\s+(?:hai|ba|tư|tu|bốn|bon|năm|nam|sáu|sau|bảy|bay|[2-7])(?:\s+(?:tuần|tuan)\s+(?:này|nay|sau|tới|toi))?|"
+    r"(?:chủ\s+nhật|chu\s+nhat)(?:\s+(?:tuần|tuan)\s+(?:này|nay|sau|tới|toi))?)"
+    r"(?:\s+(?:(?:lúc|luc)\s+)?\d{1,2}\s*(?:h|giờ|gio|:)\s*(?:\d{1,2}\s*(?:phút|phut|p)?|rưỡi|ruoi)?)?"
+    r"|(?:hôm\s+nay|hom\s+nay|ngày\s+mai|ngay\s+mai|ngày\s+mốt|ngay\s+mot|mai|(?:cuối\s+tuần|cuoi\s+tuan)(?:\s+(?:này|nay|sau|tới|toi))?|"
+    r"(?:thứ|thu)\s+(?:hai|ba|tư|tu|bốn|bon|năm|nam|sáu|sau|bảy|bay|[2-7])(?:\s+(?:tuần|tuan)\s+(?:này|nay|sau|tới|toi))?|"
+    r"(?:chủ\s+nhật|chu\s+nhat)(?:\s+(?:tuần|tuan)\s+(?:này|nay|sau|tới|toi))?|(?:ngày|ngay)\s+\d{1,2}[/-]\d{1,2}(?:[/-]\d{4})?)"
+    r"(?:\s+(?:vào\s+|vao\s+|lúc\s+|luc\s+)?(?:(?:buổi|buoi)\s+)?(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem))?"
+    r"(?:\s+(?:(?:lúc|luc)\s+)?\d{1,2}\s*(?:h|giờ|gio|:)\s*(?:\d{1,2}\s*(?:phút|phut|p)?|rưỡi|ruoi)?)?"
+    r"|\d{1,2}\s*(?:h|giờ|gio|:)\s*(?:\d{1,2}\s*(?:phút|phut|p)?|rưỡi|ruoi)?"
+    r"(?:\s+(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem))?"
+    r"(?:\s+(?:hôm\s+nay|hom\s+nay|ngày\s+mai|ngay\s+mai|ngày\s+mốt|ngay\s+mot|mai|nay|(?:ngày|ngay)\s+\d{1,2}[/-]\d{1,2}(?:[/-]\d{4})?))?"
+    r"|\d{1,3}\s*(?:tiếng|tieng|giờ|gio|phút|phut|ngày|ngay)\s+(?:nữa|nua|tới|toi)"
+    r")\s*[,:-]?\s*",
+    flags=re.IGNORECASE,
+)
+
+_TRAILING_TASK_TIME_RE = re.compile(
+    r"\s+(?:vào|vao|lúc|luc)\s+(?:(?:buổi|buoi)\s+)?(?:(?:sáng|sang|trưa|trua|chiều|chieu|tối|toi|đêm|dem)\s+)?"
+    r"(?:hôm\s+nay|hom\s+nay|ngày\s+mai|ngay\s+mai|ngày\s+mốt|ngay\s+mot|mai|(?:cuối\s+tuần|cuoi\s+tuan)(?:\s+(?:này|nay|sau|tới|toi))?|"
+    r"(?:thứ|thu)\s+(?:hai|ba|tư|tu|bốn|bon|năm|nam|sáu|sau|bảy|bay|[2-7])(?:\s+(?:tuần|tuan)\s+(?:này|nay|sau|tới|toi))?|"
+    r"(?:chủ\s+nhật|chu\s+nhat)(?:\s+(?:tuần|tuan)\s+(?:này|nay|sau|tới|toi))?|(?:ngày|ngay)\s+\d{1,2}[/-]\d{1,2}(?:[/-]\d{4})?|"
+    r"\d{1,2}\s*(?:h|giờ|gio|:)\s*(?:\d{1,2})?.*)$",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_pure_source_code_message(msg: str) -> bool:
+    """
+    Chỉ chặn tin nhắn thực sự là mã nguồn / câu lệnh CLI / SQL,
+    KHÔNG chặn nhầm câu tiếng Việt tự nhiên có chứa ký hiệu '->', '=', '>=' (VD: 'Ghi nhớ: chuyển UIKit -> SwiftUI', 'BMI = 22').
+    """
+    stripped = (msg or "").strip()
+    if not stripped:
+        return True
+    if _RAW_CODE_START_RE.search(stripped) or _LIKELY_SQL_OR_CLI_RE.search(stripped):
+        return True
+    if "\n" in stripped and all(_is_likely_code_line(ln, True) for ln in stripped.splitlines() if ln.strip()):
+        return True
+    if _VN_PROSE_OR_CMD_LEAD_RE.search(stripped):
+        return False
+    # Nếu câu có dấu tiếng Việt rõ ràng và không có ngoặc nhọn/chấm phẩy kết thúc code
+    if re.search(r"[àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]", stripped.lower()):
+        if not re.search(r"[{}]|\);\s*$", stripped):
+            return False
+    return _is_likely_code_line(stripped, False)
+
+
+def _clean_extracted_task_title(raw_body: str, has_parsed_due: bool) -> str:
+    body = re.sub(
+        r"\s+(?:nhé|nhe|nha|giúp\s+mình|giup\s+minh|cho\s+mình|cho\s+minh|với\s+nhé|voi\s+nhe|với\s+nha|voi\s+nha|ạ|nhá)$",
+        "",
+        raw_body.strip(" \t\r\n.!;"),
+        flags=re.IGNORECASE,
+    ).strip(" ,:-")
+    if has_parsed_due:
+        stripped = _LEADING_TASK_TIME_RE.sub("", body).strip(" ,:-")
+        stripped = _TRAILING_TASK_TIME_RE.sub("", stripped).strip(" ,:-")
+        stripped = re.sub(r"^(?:phải|phai|cần|can|nhớ|nho|là)\s+", "", stripped, flags=re.IGNORECASE).strip()
+        if len(stripped.split()) >= 2:
+            body = stripped
+    return _capitalize_first_char(body)
+
+
+def _split_compound_memory_clauses(clause_text: str) -> list[str]:
+    """Tách câu ghép tiếng Việt (có dấu & không dấu) có nhiều mệnh đề thông tin cá nhân độc lập."""
+    parts = re.split(
+        r"\s*(?:;\s*|\s+(?:và|va|đồng\s+thời|dong\s+thoi|ngoài\s+ra|ngoai\s+ra)\s+"
+        r"(?=(?:(?:mình|minh|tôi|toi|anh|em)\s+)?(?:đang\s+|dang\s+|vừa\s+|vua\s+|rất\s+|rat\s+|khá\s+|kha\s+|cũng\s+|cung\s+|thường\s+|thuong\s+|hay\s+|bị\s+|bi\s+|có\s+thói\s+quen\s+|co\s+thoi\s+quen\s+)?"
+        r"(?:làm|lam|xây\s+dựng|xay\s+dung|phát\s+triển|phat\s+trien|code|viết|viet|"
+        r"thích|thich|ghét|ghet|mê|chuộng|chuong|không\s+thích|khong\s+thich|"
+        r"không\s+uống|khong\s+uong|không\s+ăn|khong\s+an|dị\s+ứng|di\s+ung|kiêng|kieng|"
+        r"ăn\s+chay|an\s+chay|đau\s+dạ\s+dày|dau\s+da\s+day|chạy\s+bộ|chay\s+bo|tập|tap|"
+        r"thói\s+quen|thoi\s+quen|chuyên\s+dùng|chuyen\s+dung|ưu\s+tiên|uu\s+tien)))\s*",
+        clause_text.strip(),
+        flags=re.IGNORECASE,
+    )
+    cleaned: list[str] = []
+    for p in parts:
+        c = p.strip(" \t\r\n,.!;")
+        c = re.sub(r"^(?:rằng|rang|là)\s+", "", c, flags=re.IGNORECASE)
+        c = re.sub(r"^(?:mình|minh|tôi|toi|tớ)\s+", "", c, flags=re.IGNORECASE)
+        c = re.sub(r"\s+(?:nhé|nhe|nha|ạ|nhá|đó|đấy)$", "", c, flags=re.IGNORECASE).strip()
+        if len(c) >= 5 and not _QUESTION_CLAUSE_RE.search(c):
+            cleaned.append(_capitalize_first_char(c))
+    return cleaned
+
+
+def extract_instant_memory_and_tasks(raw_message: str, now_dt: datetime | None = None) -> dict:
+    """
+    Tầng 1 (< 1ms): Nhận diện & lưu tức thì các lệnh Nhắc việc, Hoàn thành việc, Quên ký ức,
+    Ghi nhớ tường minh và câu kể thông tin cá nhân (sở thích / dự án / sức khỏe / thói quen, cả có dấu & không dấu).
+    """
+    result: dict = {
+        "memories_added": [],
+        "memories_forgotten": [],
+        "tasks_added": [],
+        "tasks_completed": [],
+        "direct_reply": None,
+        "toast": "",
+    }
+    if not raw_message:
+        return result
+
+    without_fences = _FENCED_CODE_BLOCK_RE.sub(" ", raw_message).strip()
+    if not without_fences:
+        return result
+    msg = _INLINE_CODE_UNWRAP_RE.sub(lambda m: (m.group(1) or m.group(2) or "").strip(), without_fences).strip()
+    if not msg or _is_pure_source_code_message(msg):
+        return result
+
+    msg_single = re.sub(r"\s+", " ", msg).strip()
+    norm_msg = _norm(msg_single)
+
+    # Tránh can thiệp vào lệnh xóa lịch sử chat
+    if _strip_conversational_fillers(norm_msg) in ("xoa lich su", "clear", "reset", "xoa chat", "xoa hoi thoai"):
+        return result
+
+    # 1. Lệnh Nhắc việc / Thêm việc cần nhớ
+    m_remind = re.match(
+        r"^(?:(?:ê|e|alo|chào|chao)\s+)?(?:wisp\s+)?(?:(?:ơi|oi)\s+)?(?:hãy\s+|hay\s+|nhớ\s+|nho\s+|làm\s+ơn\s+|lam\s+on\s+)?"
+        r"(?:nhắc\s+(?:mình|tôi|anh|em)|nhac\s+(?:minh|toi|anh|em)|"
+        r"(?:thêm|them|tạo|tao|lưu|luu)\s+(?:việc\s+cần\s+(?:làm|nhớ)|viec\s+can\s+(?:lam|nho)|lời\s+nhắc|loi\s+nhac|nhắc\s+việc|nhac\s+viec|task))\s*[:,-]?\s+(.+)$",
+        msg_single,
+        flags=re.IGNORECASE,
+    )
+    if m_remind and not msg_single.endswith("?"):
+        task_body = m_remind.group(1).strip()
+        due_text, due_iso = memory_store.parse_vietnamese_due_time(task_body, now_dt=now_dt)
+        clean_title = _clean_extracted_task_title(task_body, has_parsed_due=bool(due_text))
+        if len(clean_title) >= 2:
+            task = memory_store.add_task(
+                title=clean_title,
+                due_text=due_text,
+                due_iso=due_iso,
+                now_dt=now_dt,
+            )
+            if task:
+                result["tasks_added"].append(task)
+                due_badge = f" (⏰ {task['due_text']})" if task.get("due_text") else ""
+                result["toast"] = f"📌 Đã thêm việc cần nhớ: {task['title']}"
+                result["direct_reply"] = f"📌 Đã thêm việc cần nhớ: **{task['title']}**{due_badge}."
+                return result
+
+    # 2. Lệnh Đánh dấu hoàn thành việc cần nhớ
+    m_done = re.match(
+        r"^(?:wisp\s+(?:(?:ơi|oi)\s+)?)?(?:(?:mình|minh|tôi|toi|anh|em)\s+)?(?:đã\s+|da\s+|vừa\s+|vua\s+)?"
+        r"(?:xong\s+việc|làm\s+xong\s+việc|hoàn\s+thành(?:\s+việc)?|đánh\s+dấu\s+(?:xong|hoàn\s+thành)|"
+        r"xong\s+viec|lam\s+xong\s+viec|hoan\s+thanh(?:\s+viec)?|danh\s+dau\s+(?:xong|hoan\s+thanh))\s*[:,-]?\s*"
+        r"(.+?)(?:\s+rồi|\s+roi)?(?:\s+(?:nhé|nhe|nha|ạ))?[.!]*$",
+        msg_single,
+        flags=re.IGNORECASE,
+    )
+    if m_done and not msg_single.endswith("?"):
+        target_q = m_done.group(1).strip(" \"'“”")
+        completed = memory_store.complete_task_by_query(target_q, now_dt=now_dt)
+        if completed:
+            result["tasks_completed"].extend(completed)
+            result["toast"] = f"✅ Đã hoàn thành: {completed[0]['title']}"
+            result["direct_reply"] = f"✅ Tuyệt vời! Wisp đã đánh dấu hoàn thành việc: **{completed[0]['title']}**."
+        else:
+            result["direct_reply"] = f"ℹ️ Mình chưa tìm thấy việc đang chờ nào khớp với “{target_q}” trong danh sách Việc cần nhớ."
+        return result
+
+    # 3. Lệnh Quên / Xóa ký ức
+    m_forget = re.match(
+        r"^(?:wisp\s+(?:(?:ơi|oi)\s+)?)?(?:hãy\s+|hay\s+|làm\s+ơn\s+|lam\s+on\s+)?"
+        r"(?:quên\s+(?:chuyện|việc|thông\s+tin|ký\s+ức|rằng|là)?|xóa\s+ký\s+ức(?:\s+về)?|đừng\s+nhớ\s+(?:chuyện|việc)?|"
+        r"quen\s+(?:chuyen|viec|thong\s+tin|ky\s+uc|rang|la)?|xoa\s+ky\s+uc(?:\s+ve)?|dung\s+nho\s+(?:chuyen|viec)?)\s*[:,-]?\s*"
+        r"(.+?)(?:\s+(?:đi|di))?(?:\s+(?:nhé|nhe|nha|giúp\s+mình|giup\s+minh|ạ))?[.!]*$",
+        msg_single,
+        flags=re.IGNORECASE,
+    )
+    if m_forget and not msg_single.endswith("?"):
+        forget_q = re.sub(r"\s+(?:đi|di|giúp\s+mình|giup\s+minh)$", "", m_forget.group(1).strip(), flags=re.IGNORECASE).strip(" \"'“”")
+        deleted = memory_store.forget_memories_by_query(forget_q)
+        if deleted:
+            result["memories_forgotten"].extend(deleted)
+            result["toast"] = f"🗑️ Wisp đã quên {len(deleted)} ký ức"
+            if len(deleted) == 1:
+                result["direct_reply"] = f"🗑️ Wisp đã xóa khỏi trí nhớ dài hạn: “{deleted[0]['content']}”."
+            else:
+                result["direct_reply"] = f"🗑️ Wisp đã xóa {len(deleted)} ký ức liên quan đến “{forget_q}” khỏi trí nhớ dài hạn."
+        else:
+            result["direct_reply"] = f"ℹ️ Trong trí nhớ dài hạn hiện không có ký ức nào khớp với “{forget_q}”."
+        return result
+
+    # 4a. Lệnh Ghi nhớ tường minh ("Ghi nhớ: ...", "Hãy nhớ giúp mình: ...")
+    m_explicit_mem = re.match(
+        r"^(?:wisp\s+(?:(?:ơi|oi)\s+)?)?(?:hãy\s+|hay\s+)?"
+        r"(?:ghi\s+nhớ|nhớ\s+giúp\s+(?:mình|tôi|anh|em)|lưu\s+ký\s+ức|ghi\s+nho|nho\s+giup\s+(?:minh|toi|anh|em)|luu\s+ky\s+uc)"
+        r"(?:\s+(?:giúp\s+mình|giup\s+minh|cho\s+mình|cho\s+minh|rằng|rang|là|nhé|nhe))?\s*[:,-]\s*(.+)$|"
+        r"^(?:wisp\s+(?:(?:ơi|oi)\s+)?)?(?:hãy\s+|hay\s+)?(?:ghi\s+nhớ|ghi\s+nho)\s+(?:giúp\s+mình\s+|giup\s+minh\s+|cho\s+mình\s+|cho\s+minh\s+)?(?:rằng\s+|rang\s+|là\s+)?(.+)$",
+        msg_single,
+        flags=re.IGNORECASE,
+    )
+    if m_explicit_mem and not msg_single.endswith("?"):
+        raw_fact = (m_explicit_mem.group(1) or m_explicit_mem.group(2) or "").strip()
+        clauses = _split_compound_memory_clauses(raw_fact) or [_capitalize_first_char(raw_fact.strip(" .!"))]
+        for cl in clauses:
+            saved = memory_store.upsert_memory(cl, category="auto", importance=4, source="fast_rule", now_dt=now_dt)
+            if saved:
+                result["memories_added"].append(saved)
+        if result["memories_added"]:
+            joined = "; ".join(m["content"] for m in result["memories_added"])
+            result["toast"] = f"🧠 Wisp đã ghi nhớ: {result['memories_added'][0]['content']}"
+            result["direct_reply"] = f"🧠 Wisp đã lưu vào trí nhớ dài hạn: **{joined}**."
+            return result
+
+    # 4b. Tự học nhanh từ câu kể tự nhiên ngôi thứ nhất (khi bật auto_learn, hỗ trợ cả gõ có dấu & không dấu)
+    prof = get_user_profile()
+    if not prof.get("auto_learn", True):
+        return result
+
+    for sent in re.split(r"(?<=[.!?\n])\s+", msg):
+        sent_clean = sent.strip()
+        if not sent_clean or _QUESTION_CLAUSE_RE.search(sent_clean):
+            continue
+
+        for m_self in re.finditer(
+            r"\b(?P<pron>mình|minh|tôi|toi|(?:anh(?!\s+(?:ấy|ay|ta|đó|do|họ|ho)))|(?:em(?!\s+(?:ấy|ay|ta|đó|do|họ|ho))))\s+"
+            r"(?P<pred>"
+            r"(?:(?:đang|dang|vừa|vua|sắp|sap)\s+)?(?:làm|lam|xây\s+dựng|xay\s+dung|phát\s+triển|phat\s+trien|viết|viet|code|triển\s+khai|trien\s+khai)\s+"
+            r"(?:dự\s+án|du\s+an|project|ứng\s+dụng|ung\s+dung|app|sản\s+phẩm|san\s+pham|website|thư\s+viện|thu\s+vien|tool)\s+[^.!?\n]{2,160}?(?=(?:,\s*(?:mình|minh|tôi|toi)\s+)|[.!?\n]|$)"
+            r"|(?:(?:rất|rat|khá|kha|cực\s+kỳ|cuc\s+ky)\s+)?(?:thích|thich|ghét|ghet|mê|chuộng|chuong|yêu\s+thích|yeu\s+thich|không\s+thích|khong\s+thich)\s+[^.!?\n]{3,150}?(?=(?:,\s*(?:mình|minh|tôi|toi)\s+)|[.!?\n]|$)"
+            r"|(?:(?:bị|bi)\s+)?(?:dị\s+ứng(?:\s+với)?|di\s+ung(?:\s+voi)?|không\s+uống\s+được|khong\s+uong\s+duoc|không\s+ăn\s+được|khong\s+an\s+duoc|ăn\s+chay|an\s+chay|kiêng|kieng|đau\s+dạ\s+dày|dau\s+da\s+day|mất\s+ngủ|mat\s+ngu)\s*[^.!?\n]{2,140}?(?=(?:,\s*(?:mình|minh|tôi|toi)\s+)|[.!?\n]|$)"
+            r"|(?:có\s+thói\s+quen|co\s+thoi\s+quen|thường\s+xuyên|thuong\s+xuyen|(?:mỗi|moi)\s+(?:sáng|sang|tối|toi)\s+(?:thường|thuong)|(?:hàng|hang)\s+(?:ngày|ngay)\s+(?:thường|thuong))\s+[^.!?\n]{3,150}?(?=(?:,\s*(?:mình|minh|tôi|toi)\s+)|[.!?\n]|$)"
+            r"|(?:chuyên\s+dùng|chuyen\s+dung|ưu\s+tiên\s+dùng|uu\s+tien\s+dung|đang\s+dùng\s+stack|dang\s+dung\s+stack|đang\s+học|dang\s+hoc)\s+[^.!?\n]{2,140}?(?=(?:,\s*(?:mình|minh|tôi|toi)\s+)|[.!?\n]|$)"
+            r")",
+            sent_clean,
+            flags=re.IGNORECASE,
+        ):
+            # Tránh bắt tên riêng 'Minh' ở ngôi thứ 3 giữa câu (VD: 'Hôm qua Minh thích ăn phở')
+            pron_raw = m_self.group("pron")
+            if pron_raw == "Minh" and m_self.start() > 0 and sent_clean[: m_self.start()].rstrip()[-1:] not in (",", ";"):
+                continue
+            if _is_preceded_by_possessive(sent_clean, m_self.start()):
+                continue
+            pred_text = m_self.group("pred").strip()
+            clauses = _split_compound_memory_clauses(pred_text)
+            for cl in clauses:
+                saved = memory_store.upsert_memory(cl, category="auto", importance=3, source="fast_rule", now_dt=now_dt)
+                if saved:
+                    result["memories_added"].append(saved)
+
+    if result["memories_added"]:
+        if len(result["memories_added"]) == 1:
+            result["toast"] = f"🧠 Wisp đã ghi nhớ: {result['memories_added'][0]['content']}"
+        else:
+            result["toast"] = f"🧠 Wisp đã ghi nhớ {len(result['memories_added'])} thông tin mới"
+
+    return result
+
+
+def _build_memory_context_prompt(query: str, now_dt: datetime | None = None) -> str:
+    """Truy xuất Ký ức dài hạn, Việc cần nhớ đang chờ & Tóm tắt phiên dài để đưa vào System Prompt."""
+    try:
+        bundle = memory_store.retrieve_context_bundle(
+            query=query,
+            now_dt=now_dt,
+            max_memories=8,
+            max_tasks=6,
+            mark_used=True,
+        )
+    except Exception:
+        return ""
+
+    memories = bundle.get("memories") or []
+    tasks = bundle.get("tasks") or []
+    summaries = bundle.get("summaries") or []
+
+    if not memories and not tasks and not summaries:
+        return ""
+
+    sections: list[str] = []
+    if memories:
+        mem_lines = ["\n[KÝ ỨC DÀI HẠN LIÊN QUAN CỦA CHỦ NHÂN (SQLITE MEMORY)]:"]
+        for m in memories:
+            pin_tag = "📌 Ghim | " if m.get("pinned") else ""
+            mem_lines.append(f"- [{pin_tag}{m.get('category', 'fact')}] {m.get('content', '')}")
+        sections.append("\n".join(mem_lines))
+
+    if tasks:
+        task_lines = ["\n[VIỆC CẦN NHỚ & KẾ HOẠCH CÁ NHÂN ĐANG CHỜ]:"]
+        for t in tasks:
+            due_part = f" (Thời hạn: {t['due_text']})" if t.get("due_text") else ""
+            task_lines.append(f"- {t.get('title', '')}{due_part}")
+        sections.append("\n".join(task_lines))
+
+    if summaries:
+        sum_lines = ["\n[TÓM TẮT MẠCH CHUYỆN TRƯỚC TRONG PHIÊN NÀY]:"]
+        for s in summaries:
+            sum_lines.append(f"- {s.get('summary', '')}")
+        sections.append("\n".join(sum_lines))
+
+    sections.append(
+        "(HƯỚNG DẪN TRÍ NHỚ CHỦ ĐỘNG: Khi chủ nhân hỏi về dự án, sở thích, thói quen, lịch trình/việc cần làm "
+        "hoặc xin tư vấn thực tế, hãy chủ động kết nối các dữ liệu Ký ức dài hạn, Việc cần nhớ, Thời gian thực "
+        "và Thời tiết ở trên để đưa ra câu trả lời chính xác, tinh tế và cá nhân hóa. Không liệt kê máy móc các ký ức không liên quan)."
+    )
+    return "\n".join(sections)
+
+
+def _answer_personal_memory_offline(
+    raw_message: str,
+    text_norm: str,
+    mem_events: dict | None = None,
+    now_dt: datetime | None = None,
+) -> str | None:
+    """
+    Phản hồi thông minh từ SQLite cục bộ trong trường hợp máy hoàn toàn mất mạng VÀ chưa bật Ollama:
+    - Nếu người dùng vừa kể thông tin cá nhân mới (đã lưu ở Tầng 1): xác nhận đã ghi nhớ.
+    - Nếu người dùng hỏi lại về dự án / sở thích / việc cần làm của chính mình: tra trực tiếp từ SQLite.
+    """
+    n = text_norm or _norm(raw_message)
+    added_mems = (mem_events or {}).get("memories_added") or []
+    if added_mems and not _QUESTION_CLAUSE_RE.search(raw_message):
+        joined = "; ".join(m["content"] for m in added_mems)
+        return f"🧠 Mình đã ghi nhớ vào bộ nhớ dài hạn: **{joined}**."
+
+    has_self_ref = bool(re.search(r"\b(minh|toi|cua minh|cho minh)\b", n))
+    asks_mem = bool(
+        re.search(
+            r"\b(du an|project|app|ung dung|so thich|thich gi|kieng|di ung|thoi quen|nho gi|ten gi|ten la gi)\b",
+            n,
+        )
+    )
+    asks_task = bool(
+        re.search(
+            r"\b(viec gi|viec can|can lam|can nho|lich|ke hoach|nhac nho)\b",
+            n,
+        )
+    )
+    if not (has_self_ref and (asks_mem or asks_task)):
+        return None
+
+    bundle = memory_store.retrieve_context_bundle(raw_message, now_dt=now_dt, max_memories=4, max_tasks=4)
+    mems = bundle.get("memories") or []
+    tasks = bundle.get("tasks") or []
+    if not mems and not tasks:
+        return None
+
+    lines: list[str] = []
+    if asks_mem and mems:
+        top_mems = [m["content"] for m in mems[:2]]
+        lines.append(f"🧠 Theo trí nhớ dài hạn của mình: **{'; '.join(top_mems)}**.")
+    if asks_task and tasks:
+        t_parts = [
+            f"**{t['title']}**" + (f" (⏰ {t['due_text']})" if t.get("due_text") else "")
+            for t in tasks[:3]
+        ]
+        lines.append(f"📌 Việc cần nhớ đang chờ: {'; '.join(t_parts)}.")
+    if not lines and mems:
+        lines.append(f"🧠 Theo trí nhớ của mình: **{mems[0]['content']}**.")
+    return "\n".join(lines) if lines else None
+
+
+def _extract_json_object(raw_text: str) -> dict | None:
+    """Tách an toàn JSON object từ đầu ra của Gemini hoặc Ollama (kể cả khi được bọc trong ```json)."""
+    if not raw_text:
+        return None
+    s = raw_text.strip()
+    s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*```$", "", s)
+    start = s.find("{")
+    end = s.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(s[start : end + 1])
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _call_llm_json(prompt: str, system_instruction: str = "") -> dict | None:
+    """
+    Gọi nhanh LLM ở chế độ JSON chuẩn hóa cho tác vụ chạy ngầm:
+    Ưu tiên Gemini Flash-Lite (thinkingBudget=0, responseMimeType=application/json, tự động bỏ thinkingConfig nếu HTTP 400),
+    tự động fallback sang Ollama local (format=json) khi offline.
+    """
+    now_mono = time.monotonic()
+    if GEMINI_API_KEY and now_mono >= _GEMINI_NETWORK_OFFLINE_UNTIL:
+        bg_models = ["gemini-3.1-flash-lite", *[m for m in GEMINI_MODELS if m != "gemini-3.1-flash-lite"]]
+        for model_name in bg_models:
+            if now_mono < _GEMINI_COOLDOWN_UNTIL.get(model_name, 0.0):
+                continue
+            url = f"{GEMINI_BASE_URL}/{model_name}:generateContent?key={GEMINI_API_KEY}"
+            for include_thinking in (True, False):
+                gen_cfg: dict = {
+                    "temperature": 0.1,
+                    "responseMimeType": "application/json",
+                }
+                if include_thinking:
+                    gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+                body: dict = {
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": gen_cfg,
+                }
+                if system_instruction:
+                    body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(body).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=5.0) as resp:
+                        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                    cands = data.get("candidates") or []
+                    if cands:
+                        parts = ((cands[0].get("content") or {}).get("parts")) or []
+                        txt = "".join(
+                            str(p.get("text") or "")
+                            for p in parts
+                            if isinstance(p, dict) and not p.get("thought")
+                        ).strip()
+                        obj = _extract_json_object(txt)
+                        if obj is not None:
+                            return obj
+                    break
+                except urllib.error.HTTPError as e:
+                    try:
+                        e.close()
+                    except Exception:
+                        pass
+                    if e.code == 400 and include_thinking:
+                        continue
+                    break
+                except Exception:
+                    break
+
+    # Fallback sang Ollama Local ở chế độ format="json"
+    try:
+        model = _resolve_ollama_model()
+        if not model:
+            return None
+        msgs = []
+        if system_instruction:
+            msgs.append({"role": "system", "content": system_instruction})
+        msgs.append({"role": "user", "content": prompt})
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": msgs,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.1},
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            OLLAMA_CHAT_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        txt = ((data.get("message") or {}).get("content") or "").strip()
+        return _extract_json_object(txt)
+    except Exception:
+        return None
+
+
+def _has_personal_memory_signal(user_msg: str) -> bool:
+    """Kiểm tra nhanh câu chat có tín hiệu thông tin cá nhân/dự án/sở thích/kế hoạch đáng để Tầng 2 AI phân tích không."""
+    if not user_msg:
+        return False
+    cleaned = _CODE_SEGMENT_RE.sub(" ", user_msg).strip()
+    if len(cleaned.split()) < 4:
+        return False
+    n = _norm(cleaned)
+    if not re.search(r"\b(minh|toi|anh|em|du an|project|app|so thich|thoi quen|ke hoach|lich|tuan sau|ngay mai)\b", n):
+        return False
+    return bool(
+        re.search(
+            r"\b(du an|project|app|ung dung|thich|ghet|di ung|kieng|thoi quen|thuong|dang lam|chuyen sang|"
+            r"doi sang|bo|het|khong con|quen|nhac|ke hoach|lich|sap|se|dinh|muon|hoc|dung|stack|vo|chong|con|gia dinh)\b",
+            n,
+        )
+    )
+
+
+def _run_background_memory_learning_sync(user_msg: str, assistant_msg: str = "") -> list[dict]:
+    """
+    Tầng 2 (Chạy ngầm sau lượt chat): Dùng LLM JSON rút trích & hợp nhất Ký ức / Việc cần nhớ
+    (hỗ trợ add_memory, update_memory khi thông tin cũ thay đổi, delete_memory, add_task, complete_task).
+    """
+    if not get_user_profile().get("auto_learn", True):
+        return []
+    cleaned_user = _CODE_SEGMENT_RE.sub(" ", user_msg or "").strip()
+    if not cleaned_user:
+        return []
+
+    bundle = memory_store.retrieve_context_bundle(
+        cleaned_user, max_memories=10, max_tasks=8, mark_used=False
+    )
+    existing_mems = [
+        {"id": m["id"], "category": m["category"], "content": m["content"]}
+        for m in (bundle.get("memories") or [])
+    ]
+    existing_tasks = [
+        {"id": t["id"], "title": t["title"], "due_text": t["due_text"]}
+        for t in (bundle.get("tasks") or [])
+    ]
+
+    sys_inst = (
+        "Bạn là bộ trích xuất Trí nhớ Dài hạn của trợ lý cá nhân Wisp. "
+        "Chỉ trả về DUY NHẤT một JSON object theo schema: "
+        '{"ops": [{"op": "add_memory|update_memory|delete_memory|add_task|complete_task", ...}]}.'
+    )
+    prompt = (
+        f"KÝ ỨC HIỆN CÓ:\n{json.dumps(existing_mems, ensure_ascii=False)}\n\n"
+        f"VIỆC ĐANG CHỜ HIỆN CÓ:\n{json.dumps(existing_tasks, ensure_ascii=False)}\n\n"
+        f"TIN NHẮN MỚI CỦA NGƯỜI DÙNG:\n{cleaned_user}\n\n"
+        "QUY TẮC:\n"
+        "1. Chỉ lưu sự thật bền vững về CHÍNH người dùng (category thuộc: preference, project, skill, habit, health, relationship, fact; importance 1..5) hoặc việc cần nhớ cụ thể.\n"
+        "2. KHÔNG trích xuất câu hỏi thông thường, thời tiết hay thông tin đã có y hệt trong KÝ ỨC HIỆN CÓ.\n"
+        "3. Nếu tin nhắn mới CẬP NHẬT/THAY ĐỔI một ký ức cũ (ví dụ đổi công nghệ, đổi sở thích), phát lệnh "
+        '{"op": "update_memory", "id": <id_cu>, "category": "...", "content": "<noi_dung_moi>", "importance": 4}.\n'
+        "4. Nếu người dùng báo một ký ức cũ không còn đúng hoặc bảo quên đi, phát lệnh "
+        '{"op": "delete_memory", "id": <id_cu>}.\n'
+        "5. Nếu có kế hoạch/việc cần làm mới chưa có trong VIỆC ĐANG CHỜ, phát lệnh "
+        '{"op": "add_task", "title": "...", "due_text": "..."}. Nếu báo đã làm xong việc đang chờ, phát lệnh {"op": "complete_task", "id": <id_task>}.\n'
+        '6. Nếu không có gì mới cần cập nhật, trả về {"ops": []}.'
+    )
+
+    parsed = _call_llm_json(prompt, system_instruction=sys_inst)
+    if not isinstance(parsed, dict):
+        return []
+    ops = parsed.get("ops")
+    if not isinstance(ops, list):
+        return []
+
+    applied: list[dict] = []
+    for raw_op in ops[:6]:
+        if not isinstance(raw_op, dict):
+            continue
+        op_type = str(raw_op.get("op") or "").strip().lower()
+        try:
+            if op_type == "add_memory":
+                content = str(raw_op.get("content") or "").strip()
+                cat = str(raw_op.get("category") or "auto").strip().lower()
+                imp = int(raw_op.get("importance") or 3)
+                if content:
+                    res = memory_store.upsert_memory(content, category=cat, importance=imp, source="ai_bg")
+                    if res:
+                        applied.append({"op": "add_memory", "item": res})
+            elif op_type == "update_memory":
+                mem_id = raw_op.get("id")
+                content = str(raw_op.get("content") or "").strip()
+                cat = str(raw_op.get("category") or "").strip().lower() or None
+                imp = int(raw_op["importance"]) if "importance" in raw_op and raw_op["importance"] is not None else None
+                if mem_id is not None and content:
+                    res = memory_store.update_memory(int(mem_id), content=content, category=cat, importance=imp)
+                    if res is None:
+                        res = memory_store.upsert_memory(content, category=cat or "auto", importance=imp or 3, source="ai_bg")
+                    if res:
+                        applied.append({"op": "update_memory", "item": res})
+            elif op_type == "delete_memory":
+                mem_id = raw_op.get("id")
+                query_str = str(raw_op.get("query") or raw_op.get("content") or "").strip()
+                if mem_id is not None:
+                    if memory_store.delete_memory(int(mem_id)):
+                        applied.append({"op": "delete_memory", "id": int(mem_id)})
+                elif query_str:
+                    deleted = memory_store.forget_memories_by_query(query_str)
+                    if deleted:
+                        applied.append({"op": "delete_memory", "deleted": deleted})
+            elif op_type == "add_task":
+                title = str(raw_op.get("title") or "").strip()
+                due_hint = str(raw_op.get("due_text") or "").strip()
+                if title:
+                    d_txt, d_iso = memory_store.parse_vietnamese_due_time(due_hint or title)
+                    res = memory_store.add_task(title=title, due_text=d_txt or due_hint, due_iso=d_iso)
+                    if res:
+                        applied.append({"op": "add_task", "item": res})
+            elif op_type == "complete_task":
+                tid = raw_op.get("id")
+                q_str = str(raw_op.get("title") or raw_op.get("query") or "").strip()
+                if tid is not None:
+                    res = memory_store.update_task_status(int(tid), "done")
+                    if res:
+                        applied.append({"op": "complete_task", "item": res})
+                elif q_str:
+                    done_list = memory_store.complete_task_by_query(q_str)
+                    if done_list:
+                        applied.append({"op": "complete_task", "item": done_list[0]})
+        except Exception:
+            continue
+    return applied
+
+
+def _summarize_overflow_turns_locally(turns: list[dict]) -> str:
+    """Tóm tắt cục bộ súc tích (2–3 câu) khi offline để không mất mạch hội thoại dài."""
+    user_snippets: list[str] = []
+    assistant_snippets: list[str] = []
+    for item in turns:
+        role = item.get("role")
+        content = re.sub(r"\s+", " ", str(item.get("content") or "")).strip()
+        if not content:
+            continue
+        short = content[:95].rstrip() + ("…" if len(content) > 95 else "")
+        if role == "user" and len(user_snippets) < 3:
+            user_snippets.append(short)
+        elif role == "assistant" and len(assistant_snippets) < 2:
+            assistant_snippets.append(short)
+    if not user_snippets:
+        return ""
+    part_u = "; ".join(user_snippets)
+    if assistant_snippets:
+        return f"Đầu buổi trò chuyện, người dùng đã trao đổi về: {part_u}. Wisp đã phản hồi: {assistant_snippets[-1]}"
+    return f"Đầu buổi trò chuyện, người dùng đã trao đổi về: {part_u}."
+
+
+def _run_episodic_compaction_sync(expected_epoch: int) -> dict | None:
+    """Tóm tắt các lượt hội thoại cũ bị tràn khỏi cửa sổ MAX_HISTORY_TURNS vào bảng episodic_summaries."""
+    global _COMPACTION_SCHEDULED
+    with _CHAT_HISTORY_LOCK:
+        if expected_epoch != _CHAT_SESSION_EPOCH:
+            _PENDING_OVERFLOW_TURNS.clear()
+            _COMPACTION_SCHEDULED = False
+            return None
+        turns = list(_PENDING_OVERFLOW_TURNS)
+        _PENDING_OVERFLOW_TURNS.clear()
+        _COMPACTION_SCHEDULED = False
+
+    if not turns:
+        return None
+
+    transcript_lines = []
+    for t in turns[-12:]:
+        who = "Người dùng" if t.get("role") == "user" else "Wisp"
+        txt = re.sub(r"\s+", " ", str(t.get("content") or "")).strip()[:220]
+        if txt:
+            transcript_lines.append(f"- {who}: {txt}")
+    if not transcript_lines:
+        return None
+
+    summary_text = ""
+    parsed = _call_llm_json(
+        "Hãy tóm tắt đoạn hội thoại trước đó dưới đây thành 2 câu tiếng Việt thật ngắn gọn, giữ lại chủ đề chính và quyết định quan trọng. "
+        'Trả về JSON: {"summary": "..."}\n\n' + "\n".join(transcript_lines)
+    )
+    if isinstance(parsed, dict) and str(parsed.get("summary") or "").strip():
+        summary_text = str(parsed["summary"]).strip()
+    else:
+        summary_text = _summarize_overflow_turns_locally(turns)
+
+    if not summary_text:
+        return None
+
+    with _CHAT_HISTORY_LOCK:
+        if expected_epoch != _CHAT_SESSION_EPOCH:
+            return None
+    return memory_store.add_episodic_summary(summary_text)
+
+
+def _schedule_background_memory_learning(user_msg: str, assistant_msg: str = "") -> bool:
+    """Đẩy tác vụ tự học Tầng 2 vào hàng đợi nền (0ms latency penalty cho luồng chat chính)."""
+    if not get_user_profile().get("auto_learn", True):
+        return False
+    if not _has_personal_memory_signal(user_msg):
+        return False
+    _MEMORY_BG_QUEUE.put_nowait(("learn", user_msg, assistant_msg))
+    return True
+
+
+def _compact_overflow_history_async(expected_epoch: int) -> None:
+    """Đẩy tác vụ tóm tắt cuộn hội thoại dài vào hàng đợi nền."""
+    _MEMORY_BG_QUEUE.put_nowait(("compact", expected_epoch, ""))
+
+
+def _memory_bg_worker_loop() -> None:
+    while True:
+        item = _MEMORY_BG_QUEUE.get()
+        try:
+            if not isinstance(item, tuple) or not item:
+                continue
+            kind = item[0]
+            if kind == "learn":
+                _run_background_memory_learning_sync(str(item[1]), str(item[2]))
+            elif kind == "compact":
+                _run_episodic_compaction_sync(int(item[1]))
+        except Exception:
+            pass
+        finally:
+            _MEMORY_BG_QUEUE.task_done()
+
+
+_MEMORY_BG_THREAD = threading.Thread(target=_memory_bg_worker_loop, name="wisp-memory-bg", daemon=True)
+_MEMORY_BG_THREAD.start()
+
+
+def wait_for_background_memory(timeout: float = 3.0) -> bool:
+    """Chờ hàng đợi tác vụ trí nhớ nền xử lý xong (hữu ích cho kiểm thử tự động)."""
+    deadline = time.monotonic() + max(0.05, timeout)
+    while time.monotonic() < deadline:
+        if _MEMORY_BG_QUEUE.unfinished_tasks == 0:
+            return True
+        time.sleep(0.02)
+    return _MEMORY_BG_QUEUE.unfinished_tasks == 0
 
 
 def _build_user_profile_prompt() -> str:
@@ -951,8 +1791,8 @@ def _detect_city_in_text(text_norm: str) -> str:
     for alias in sorted_aliases:
         if re.search(rf"\b{re.escape(alias)}\b", text_norm):
             return alias
-    if any(kw in text_norm for kw in ("thoi tiet", "weather", "nhiet do", "bao nhieu do", "may do")):
-        extracted = _extract_city_after(text_norm, ["thoi tiet", "weather", "nhiet do", "bao nhieu do", "may do"])
+    if any(kw in text_norm for kw in ("thoi tiet", "weather", "nhiet do", "du bao", "bao nhieu do", "may do")):
+        extracted = _extract_city_after(text_norm, ["thoi tiet", "weather", "nhiet do", "du bao", "bao nhieu do", "may do"])
         if extracted and len(extracted.split()) <= 4:
             return extracted
     # Nếu câu hiện tại là câu hỏi nối tiếp (vd: "vậy mặc gì hợp?"), kiểm tra thành phố vừa nhắc ở các lượt trước
@@ -984,7 +1824,7 @@ def _world_clock(query_norm: str) -> str | None:
 def _is_short_weather_command(text_norm: str) -> bool:
     """Kiểm tra xem câu có phải lệnh tra cứu thời tiết trực tiếp (kể cả khi nói có dấu ? hoặc từ đệm) hay không."""
     core = _strip_conversational_fillers(text_norm)
-    if not any(kw in core for kw in ("thoi tiet", "weather", "nhiet do", "bao nhieu do", "may do")):
+    if not any(kw in core for kw in ("thoi tiet", "weather", "nhiet do", "du bao", "bao nhieu do", "may do")):
         return False
     # Loại trừ các câu hỏi tư vấn sâu cần LLM suy luận (mặc gì, ăn gì, đi chơi đâu, tại sao...)
     advisory_without_how = tuple(
@@ -992,7 +1832,7 @@ def _is_short_weather_command(text_norm: str) -> bool:
     )
     if any(adv in core for adv in advisory_without_how):
         return False
-    if len(core.split()) > 10:
+    if len(core.split()) > 12:
         return False
     return True
 
@@ -1567,7 +2407,12 @@ def _clean_reply_by_prefs(text: str, prefs: dict | None = None, is_fast_path: bo
         return text.strip()
 
     p = _normalize_ai_prefs(prefs)
+    grounding_footer = ""
     s = text
+    m_src = re.search(r"(\n\n(?:🌐\s*)?Nguồn:\s+.+)$", s)
+    if m_src:
+        grounding_footer = m_src.group(1)
+        s = s[: m_src.start()]
 
     if is_fast_path:
         if p["no_outro"]:
@@ -1584,8 +2429,11 @@ def _clean_reply_by_prefs(text: str, prefs: dict | None = None, is_fast_path: bo
 
     if p["plain_text"]:
         s = _apply_plain_text_format(s)
+        if grounding_footer:
+            grounding_footer = re.sub(r"🌐\s*", "", grounding_footer)
 
-    return s.strip() or text.strip()
+    out = (s.strip() + grounding_footer).strip()
+    return out or text.strip()
 
 
 def _filter_stream_tokens(token_iter, prefs: dict | None = None):
@@ -1691,20 +2539,41 @@ def _filter_stream_tokens(token_iter, prefs: dict | None = None):
                 yield rem
 
 
-def _build_system_context(text_norm: str, prefs: dict | None = None, raw_message: str = "") -> str:
-    """Tạo system prompt kèm Hồ sơ chủ nhân, cấu hình phong cách trả lời, thời gian thực và thời tiết thực tế."""
+def _build_system_context(
+    text_norm: str,
+    prefs: dict | None = None,
+    raw_message: str = "",
+    is_voice: bool = False,
+    preloaded_weather: str | None = None,
+) -> str:
+    """
+    Hợp nhất ngữ cảnh chủ động cho System Prompt:
+    [HỒ SƠ CHỦ NHÂN] + [KÝ ỨC DÀI HẠN LIÊN QUAN] + [VIỆC CẦN NHỚ & KẾ HOẠCH]
+    + [TÓM TẮT MẠCH CHUYỆN TRƯỚC] + [QUY TẮC PHONG CÁCH] + [THỜI GIAN THỰC] + [DỰ BÁO THỜI TIẾT ĐÚNG MỐC NGÀY].
+    """
     now = datetime.now(VN_TZ)
-    is_code = _is_code_request(raw_message or text_norm)
+    query_for_ctx = raw_message or text_norm
+    is_code = _is_code_request(query_for_ctx)
     ctx_lines = [
         _build_system_prompt(),
         _build_user_profile_prompt(),
-        _build_style_rules_prompt(prefs or DEFAULT_AI_PREFS, is_code_query=is_code),
-        f"\n[Ngữ cảnh thời gian thực]: Bây giờ là {now.strftime('%H:%M:%S')} — {WEEKDAY_VI[now.weekday()]}, ngày {now.strftime('%d/%m/%Y')} (giờ Việt Nam).",
     ]
-    if _is_weather_topic(raw_message, text_norm):
+    mem_ctx = _build_memory_context_prompt(query_for_ctx, now_dt=now)
+    if mem_ctx:
+        ctx_lines.append(mem_ctx)
+
+    ctx_lines.append(_build_style_rules_prompt(prefs or DEFAULT_AI_PREFS, is_code_query=is_code, is_voice=is_voice))
+    ctx_lines.append(
+        f"\n[Ngữ cảnh thời gian thực]: Bây giờ là {now.strftime('%H:%M:%S')} — "
+        f"{WEEKDAY_VI[now.weekday()]}, ngày {now.strftime('%d/%m/%Y')} (giờ Việt Nam)."
+    )
+
+    weather_info = preloaded_weather
+    if weather_info is None and _is_weather_topic(raw_message, text_norm):
         city = _detect_city_in_text(text_norm)
-        is_tomorrow = "ngay mai" in text_norm or "tomorrow" in text_norm
-        weather_info = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
+        weather_info = _get_weather_for_query(city, raw_message, text_norm, now_dt=now)
+
+    if weather_info:
         ctx_lines.append(
             f"[Dữ liệu thời tiết thực tế từ Open-Meteo]:\n{weather_info}\n"
             "(Hãy dùng chính xác số liệu và nêu rõ tên địa danh trong dữ liệu thời tiết trên để trả lời hoặc tư vấn phù hợp thực tế)."
@@ -1721,24 +2590,51 @@ def _augment_user_prompt_with_prefs(raw_message: str, prefs: dict | None = None)
 
 
 def _append_chat_history(user_msg: str, assistant_msg: str, is_fast_path: bool = False) -> None:
+    global _COMPACTION_SCHEDULED
+    if not str(user_msg or "").strip() or not str(assistant_msg or "").strip():
+        return
     max_msgs = MAX_HISTORY_TURNS * 2
+    should_schedule = False
+    epoch_snapshot = 0
     with _CHAT_HISTORY_LOCK:
         _CHAT_HISTORY.append({"role": "user", "content": user_msg})
         _CHAT_HISTORY.append({"role": "assistant", "content": assistant_msg, "is_fast_path": is_fast_path})
         if len(_CHAT_HISTORY) > max_msgs:
+            overflow = _CHAT_HISTORY[:-max_msgs]
             del _CHAT_HISTORY[:-max_msgs]
+            _PENDING_OVERFLOW_TURNS.extend(overflow)
+            if len(_PENDING_OVERFLOW_TURNS) > 24:
+                del _PENDING_OVERFLOW_TURNS[:-24]
+            if not _COMPACTION_SCHEDULED and len(_PENDING_OVERFLOW_TURNS) >= 2:
+                _COMPACTION_SCHEDULED = True
+                should_schedule = True
+                epoch_snapshot = _CHAT_SESSION_EPOCH
+    if should_schedule:
+        _compact_overflow_history_async(epoch_snapshot)
 
 
 def _clear_chat_history() -> None:
-    global _GEMINI_NETWORK_OFFLINE_UNTIL
+    """
+    Xóa lịch sử hội thoại ngắn hạn (_CHAT_HISTORY) và bản tóm tắt phiên (episodic_summaries),
+    BẢO TOÀN 100% kho Ký ức dài hạn (memories), Việc cần nhớ (tasks) và Hồ sơ cá nhân (user_profile.json).
+    """
+    global _GEMINI_NETWORK_OFFLINE_UNTIL, _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL, _CHAT_SESSION_EPOCH, _COMPACTION_SCHEDULED
     with _CHAT_HISTORY_LOCK:
+        _CHAT_SESSION_EPOCH += 1
         _CHAT_HISTORY.clear()
+        _PENDING_OVERFLOW_TURNS.clear()
+        _COMPACTION_SCHEDULED = False
+    try:
+        memory_store.clear_episodic_summaries()
+    except Exception:
+        pass
     _GEMINI_COOLDOWN_UNTIL.clear()
+    _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL = 0.0
     _GEMINI_NETWORK_OFFLINE_UNTIL = 0.0
 
 
 def clear_chat_history() -> None:
-    """Xóa sạch toàn bộ lịch sử hội thoại trong bộ nhớ backend (an toàn đa luồng)."""
+    """Xóa sạch toàn bộ lịch sử hội thoại trong bộ nhớ backend (giữ nguyên Trí nhớ dài hạn & Việc cần nhớ)."""
     _clear_chat_history()
 
 
@@ -1819,20 +2715,310 @@ def _build_gemini_contents(raw_message: str, prefs: dict | None = None) -> list[
     return contents
 
 
-def _build_gemini_generation_config(raw_message: str, prefs: dict | None = None) -> dict:
+# ==============================================================================
+# SUY LUẬN THÍCH ỨNG (ADAPTIVE THINKING) & WEB SEARCH GROUNDING
+# ==============================================================================
+
+_DEEP_REASONING_NORM_RE = re.compile(
+    r"\b("
+    r"kien truc|architecture|clean architecture|mvvm|viper|tca|riverpod|bloc|state management|"
+    r"concurrency|async|await|actor|race condition|deadlock|memory leak|retain cycle|"
+    r"performance|toi uu|refactor|design pattern|microservice|database schema|migration|"
+    r"traceback|exception|stack trace|crash|segfault|nullpointer|debug|sua loi|fix bug|tai sao loi|"
+    r"thuat toan|do phuc tap|big-o|big o|quy hoach dong|chung minh|phuong trinh|tich phan|dao ham|xac suat|"
+    r"so sanh chuyen sau|phan tich chuyen sau|phan tich uu nhuoc diem|lap ke hoach|lo trinh|chien luoc"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _classify_reasoning_plan(
+    raw_message: str,
+    text_norm: str = "",
+    prefs: dict | None = None,
+    is_voice: bool = False,
+) -> dict:
+    """
+    Phân tầng suy luận thích ứng (Adaptive Thinking):
+    - Voice Mode hoặc câu hỏi ngắn thường ngày -> thinking_budget = 0 (phản hồi tức thì).
+    - Câu hỏi kiến trúc phần mềm, debug lỗi khó, thuật toán/toán/logic, phân tích chuyên sâu, lập kế hoạch
+      -> thinking_budget = 2048 (hoặc 4096 khi style == 'detailed'), ưu tiên gemini-3.5-flash.
+    """
+    if is_voice:
+        return {
+            "thinking_budget": 0,
+            "preferred_model": "gemini-3.1-flash-lite",
+            "tier": "instant",
+            "reason": "voice_mode",
+        }
+
+    raw = raw_message or ""
+    n = text_norm or _norm(raw)
     p = _normalize_ai_prefs(prefs)
+    deep_budget = 4096 if p["style"] == "detailed" else 2048
+
+    has_code_fence = "```" in raw
+    code_line_count = sum(1 for ln in raw.splitlines() if _is_likely_code_line(ln, "\n" in raw))
+    word_count = len(raw.split())
+
+    is_deep = False
+    reason = "casual_or_short"
+
+    if has_code_fence or code_line_count >= 2:
+        is_deep = True
+        reason = "code_block_analysis"
+    elif _DEEP_REASONING_NORM_RE.search(n):
+        is_deep = True
+        reason = "complex_engineering_or_logic"
+    elif _is_code_request(raw) and word_count >= 7:
+        is_deep = True
+        reason = "code_generation"
+    elif word_count >= 25 and re.search(r"\b(phan tich|so sanh|thiet ke|giai thich chi tiet|danh gia)\b", n):
+        is_deep = True
+        reason = "multi_step_analysis"
+
+    if is_deep:
+        return {
+            "thinking_budget": deep_budget,
+            "preferred_model": "gemini-3.5-flash",
+            "tier": "deep",
+            "reason": reason,
+        }
+
     return {
-        "temperature": 0.35 if p["style"] == "concise" else 0.45,
-        "thinkingConfig": {"thinkingBudget": 0},
+        "thinking_budget": 0,
+        "preferred_model": "gemini-3.5-flash",
+        "tier": "instant",
+        "reason": reason,
     }
+
+
+def _needs_web_search_grounding(raw_message: str, text_norm: str = "") -> bool:
+    """
+    Phát hiện câu hỏi cần tra cứu Web thời gian thực qua Gemini Google Search Grounding:
+    - Hỏi tin tức/sự kiện mới, giá vàng/tỷ giá/bitcoin/thị trường hôm nay
+    - Hỏi phiên bản mới nhất / bản cập nhật hiện nay của công nghệ, thư viện, hệ điều hành
+    - Yêu cầu tường minh: 'tra trên mạng', 'tìm web', 'tìm google', 'mới nhất hiện nay'
+    """
+    if not raw_message:
+        return False
+    raw_no_code = _CODE_SEGMENT_RE.sub(" ", raw_message).strip()
+    if not raw_no_code:
+        return False
+    n = text_norm or _norm(raw_no_code)
+
+    # Không bật Web Search cho câu hỏi về bản thân chủ nhân hoặc thời tiết địa phương (đã có Open-Meteo)
+    if re.search(r"\b(cua minh|du an minh|viec gi can lam|bmi cua minh|minh bao nhieu tuoi|minh nang|minh cao)\b", n):
+        return False
+
+    explicit_web = bool(
+        re.search(
+            r"\b(tra tren mang|tim tren mang|tim tren web|tim web|tra cuu web|tim google|google giup|search web|tra mang|nguon tin moi)\b",
+            n,
+        )
+    )
+    if explicit_web:
+        return True
+
+    if _is_weather_topic(raw_no_code, n) and not re.search(r"\b(tin tuc|bao so|ap thap)\b", n):
+        return False
+
+    live_news_or_market = bool(
+        re.search(
+            r"\b(tin tuc|thoi su|su kien moi|vua ra mat|moi cong bo|gia vang|ty gia|gia bitcoin|gia btc|gia xang|chung khoan hom nay|ket qua tran)\b",
+            n,
+        )
+    )
+    if live_news_or_market:
+        return True
+
+    latest_version_or_trends = bool(
+        re.search(
+            r"\b(phien ban|version|release|ban cap nhat)\b.*\b(moi nhat|hien nay|hien tai|gan nhat)\b"
+            r"|\b(moi nhat)\b.*\b(phien ban|version|release|hien nay|hien tai)\b"
+            r"|\b(swift|swiftui|xcode|ios|macos|flutter|dart|python|react|nextjs|kotlin|android|windows|gemini|openai|claude)\b"
+            r".*\b(moi nhat|hien nay co gi|nam 2025|nam 2026|2026 co gi)\b",
+            n,
+        )
+    )
+    return latest_version_or_trends
+
+
+def _extract_grounding_sources(candidate: dict, max_sources: int = 4) -> list[tuple[str, str]]:
+    """Trích xuất danh sách (title, uri) an toàn từ groundingMetadata.groundingChunks của Gemini."""
+    if not isinstance(candidate, dict):
+        return []
+    meta = candidate.get("groundingMetadata")
+    if not isinstance(meta, dict):
+        return []
+    chunks = meta.get("groundingChunks")
+    if not isinstance(chunks, list):
+        return []
+
+    sources: list[tuple[str, str]] = []
+    seen_uris: set[str] = set()
+    seen_titles: set[str] = set()
+
+    for ch in chunks:
+        if not isinstance(ch, dict):
+            continue
+        web = ch.get("web")
+        if not isinstance(web, dict):
+            continue
+        uri = str(web.get("uri") or "").strip()
+        if not re.match(r"^https?://[^\s<>\"']+$", uri, flags=re.IGNORECASE):
+            continue
+        raw_title = re.sub(r"[\[\]\r\n]+", " ", str(web.get("title") or "")).strip()
+        raw_title = re.sub(r"\s+", " ", raw_title)
+        if not raw_title:
+            m_host = re.match(r"^https?://([^/:?#]+)", uri, flags=re.IGNORECASE)
+            raw_title = m_host.group(1) if m_host else "Nguồn Web"
+        if len(raw_title) > 60:
+            raw_title = raw_title[:57].rstrip() + "…"
+
+        uri_key = uri.lower()
+        title_key = raw_title.lower()
+        if uri_key in seen_uris or title_key in seen_titles:
+            continue
+        seen_uris.add(uri_key)
+        seen_titles.add(title_key)
+        sources.append((raw_title, uri))
+        if len(sources) >= max_sources:
+            break
+    return sources
+
+
+def _format_grounding_sources_footer(sources: list[tuple[str, str]], plain_text: bool = False) -> str:
+    if not sources:
+        return ""
+    if plain_text:
+        joined = " · ".join(f"{title} ({uri})" for title, uri in sources)
+        return f"\n\nNguồn: {joined}"
+    links = " · ".join(f"[{title}]({uri})" for title, uri in sources)
+    return f"\n\n🌐 Nguồn: {links}"
+
+
+def _build_gemini_generation_config(
+    raw_message: str,
+    prefs: dict | None = None,
+    thinking_budget: int | None = None,
+    is_voice: bool = False,
+    include_thinking_config: bool = True,
+) -> dict:
+    p = _normalize_ai_prefs(prefs)
+    if thinking_budget is None:
+        plan = _classify_reasoning_plan(raw_message, _norm(raw_message), prefs=p, is_voice=is_voice)
+        budget = int(plan["thinking_budget"])
+    else:
+        budget = max(0, int(thinking_budget))
+    cfg: dict = {
+        "temperature": 0.35 if p["style"] == "concise" else 0.45,
+    }
+    if include_thinking_config:
+        cfg["thinkingConfig"] = {"thinkingBudget": budget}
+    return cfg
+
+
+def _build_gemini_payload_bytes(
+    raw_message: str,
+    system_content: str,
+    prefs: dict | None = None,
+    thinking_budget: int = 0,
+    use_web_search: bool = False,
+    is_voice: bool = False,
+    include_thinking_config: bool = True,
+) -> bytes:
+    body: dict = {
+        "systemInstruction": {"parts": [{"text": system_content}]},
+        "contents": _build_gemini_contents(raw_message, prefs),
+        "generationConfig": _build_gemini_generation_config(
+            raw_message,
+            prefs=prefs,
+            thinking_budget=thinking_budget,
+            is_voice=is_voice,
+            include_thinking_config=include_thinking_config,
+        ),
+    }
+    if use_web_search:
+        body["tools"] = [{"google_search": {}}]
+    return json.dumps(body).encode("utf-8")
+
+
+def _build_gemini_attempt_chain(
+    raw_message: str,
+    system_content: str,
+    prefs: dict,
+    budget: int,
+    enable_web: bool,
+    is_voice: bool = False,
+    is_streaming: bool = False,
+) -> list[tuple[bytes, float, bool]]:
+    """
+    Xây dựng chuỗi payload hạ cấp an toàn `(payload_bytes, timeout_sec, has_web_tool)`:
+    1. Nếu bật Web Search và chưa bị cooldown quota Search Grounding: thử payload đầy đủ (`google_search` + `thinkingConfig`).
+    2. Payload chuẩn không tool (`use_web_search=False`, giữ nguyên `thinkingConfig` với `budget` hiện tại — kể cả `0` hoặc `>0`).
+    3. Payload tương thích tối giản: bỏ hoàn toàn cả `tools` lẫn `thinkingConfig`.
+    """
+    base_timeout = 5.0 if is_streaming else 9.0
+    thinking_timeout = 15.0 if budget > 0 else base_timeout
+    web_active = bool(enable_web and time.monotonic() >= _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL)
+
+    attempts: list[tuple[bytes, float, bool]] = []
+    if web_active:
+        attempts.append(
+            (
+                _build_gemini_payload_bytes(
+                    raw_message,
+                    system_content,
+                    prefs=prefs,
+                    thinking_budget=budget,
+                    use_web_search=True,
+                    is_voice=is_voice,
+                    include_thinking_config=True,
+                ),
+                15.0,
+                True,
+            )
+        )
+    attempts.append(
+        (
+            _build_gemini_payload_bytes(
+                raw_message,
+                system_content,
+                prefs=prefs,
+                thinking_budget=budget,
+                use_web_search=False,
+                is_voice=is_voice,
+                include_thinking_config=True,
+            ),
+            thinking_timeout,
+            False,
+        )
+    )
+    attempts.append(
+        (
+            _build_gemini_payload_bytes(
+                raw_message,
+                system_content,
+                prefs=prefs,
+                thinking_budget=0,
+                use_web_search=False,
+                is_voice=is_voice,
+                include_thinking_config=False,
+            ),
+            base_timeout,
+            False,
+        )
+    )
+    return attempts
 
 
 def _ask_gemini(raw_message: str, system_content: str, prefs: dict | None = None) -> str | None:
     """
-    Gọi Google AI Studio (Gemini API) khi có Internet.
+    Gọi Google AI Studio (Gemini API) khi có Internet (hỗ trợ Adaptive Thinking + Google Search Grounding).
     Trả về câu trả lời nếu thành công, hoặc None nếu mất mạng / hết quota để tự động fallback sang Ollama.
     """
-    global _GEMINI_NETWORK_OFFLINE_UNTIL
+    global _GEMINI_NETWORK_OFFLINE_UNTIL, _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL
     if not GEMINI_API_KEY:
         return None
 
@@ -1840,80 +3026,126 @@ def _ask_gemini(raw_message: str, system_content: str, prefs: dict | None = None
     if now_mono < _GEMINI_NETWORK_OFFLINE_UNTIL:
         return None
 
+    p = _normalize_ai_prefs(prefs)
+    n = _norm(raw_message)
+    plan = _classify_reasoning_plan(raw_message, n, prefs=p, is_voice=False)
+    budget = int(plan["thinking_budget"])
+    use_web_search = _needs_web_search_grounding(raw_message, n)
+
     available_models = [m for m in GEMINI_MODELS if now_mono >= _GEMINI_COOLDOWN_UNTIL.get(m, 0.0)]
     if not available_models:
         available_models = list(GEMINI_MODELS)
 
-    payload = json.dumps(
-        {
-            "systemInstruction": {"parts": [{"text": system_content}]},
-            "contents": _build_gemini_contents(raw_message, prefs),
-            "generationConfig": _build_gemini_generation_config(raw_message, prefs),
-        }
-    ).encode("utf-8")
+    pref_model = plan.get("preferred_model")
+    if pref_model in available_models:
+        available_models = [pref_model] + [m for m in available_models if m != pref_model]
+
+    attempts = _build_gemini_attempt_chain(
+        raw_message,
+        system_content,
+        prefs=p,
+        budget=budget,
+        enable_web=use_web_search,
+        is_voice=False,
+        is_streaming=False,
+    )
 
     for model_name in available_models:
         url = f"{GEMINI_BASE_URL}/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=3.5) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace"))
-            candidates = data.get("candidates") or []
-            if not candidates:
+        web_tool_quota_blocked = False
+
+        for attempt_idx, (cur_payload, cur_timeout, has_web_tool) in enumerate(attempts):
+            if has_web_tool and time.monotonic() < _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL and attempt_idx + 1 < len(attempts):
                 continue
-            parts = ((candidates[0].get("content") or {}).get("parts")) or []
-            reply = "".join(
-                str(p.get("text") or "")
-                for p in parts
-                if isinstance(p, dict) and not p.get("thought")
-            ).strip()
-            if reply:
-                reply = _clean_reply_by_prefs(reply, prefs, is_fast_path=False)
-                _append_chat_history(raw_message, reply)
-                return reply
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 20.0
-                continue
-            if e.code == 404:
-                _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 3600.0
-                continue
-            if e.code in (500, 502, 503, 504):
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=cur_payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=cur_timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                candidates = data.get("candidates") or []
+                if not candidates:
+                    break
+                cand0 = candidates[0]
+                parts = ((cand0.get("content") or {}).get("parts")) or []
+                reply = "".join(
+                    str(part.get("text") or "")
+                    for part in parts
+                    if isinstance(part, dict) and not part.get("thought")
+                ).strip()
+                if reply:
+                    if web_tool_quota_blocked and not has_web_tool:
+                        _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL = time.monotonic() + 180.0
+                    sources = _extract_grounding_sources(cand0)
+                    footer = _format_grounding_sources_footer(sources, plain_text=bool(p["plain_text"]))
+                    reply = _clean_reply_by_prefs(reply, p, is_fast_path=False) + footer
+                    _append_chat_history(raw_message, reply)
+                    return reply
+                break
+            except urllib.error.HTTPError as e:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+                if has_web_tool and e.code in (400, 403, 429) and attempt_idx + 1 < len(attempts):
+                    if e.code in (403, 429):
+                        web_tool_quota_blocked = True
+                    # Hạ cấp bỏ google_search ngay trên CÙNG model (không đặt cooldown model khi gói Free-Tier hết quota tool)
+                    continue
+                if e.code == 400:
+                    if attempt_idx + 1 < len(attempts):
+                        # Hạ cấp payload (bỏ hoàn toàn thinkingConfig) trên cùng model
+                        continue
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 60.0
+                    break
+                if e.code == 429:
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 20.0
+                    break
+                if e.code == 404:
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 3600.0
+                    break
+                if e.code in (500, 502, 503, 504):
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 10.0
+                    break
+                if e.code in (401, 403):
+                    return None
+                break
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+                is_net_err = False
+                if isinstance(e, urllib.error.URLError):
+                    reason_str = str(getattr(e, "reason", "")).lower()
+                    if any(k in reason_str for k in ("gaierror", "getaddrinfo", "nodename nor servname", "network", "refused", "timed out", "10051", "10060", "10065")):
+                        is_net_err = True
+                elif isinstance(e, (TimeoutError, OSError)):
+                    err_str = str(e).lower()
+                    if any(k in err_str for k in ("winerror 10051", "winerror 10060", "winerror 10065", "network", "refused", "timed out")):
+                        is_net_err = True
+                if is_net_err:
+                    _GEMINI_NETWORK_OFFLINE_UNTIL = time.monotonic() + 30.0
+                    return None
                 _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 10.0
-                continue
-            if e.code in (400, 401, 403):
+                break
+            except Exception:
                 return None
-            continue
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-            is_net_err = False
-            if isinstance(e, urllib.error.URLError):
-                reason_str = str(getattr(e, "reason", "")).lower()
-                if any(k in reason_str for k in ("gaierror", "getaddrinfo", "nodename nor servname", "network", "refused", "timed out", "10051", "10060", "10065")):
-                    is_net_err = True
-            elif isinstance(e, (TimeoutError, OSError)):
-                err_str = str(e).lower()
-                if any(k in err_str for k in ("winerror 10051", "winerror 10060", "winerror 10065", "network", "refused", "timed out")):
-                    is_net_err = True
-            if is_net_err:
-                _GEMINI_NETWORK_OFFLINE_UNTIL = time.monotonic() + 30.0
-                return None
-            _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 10.0
-            continue
-        except Exception:
-            return None
     return None
 
 
-def _stream_gemini_tokens(raw_message: str, system_content: str, prefs: dict | None = None, is_voice: bool = False):
+def _stream_gemini_tokens(
+    raw_message: str,
+    system_content: str,
+    prefs: dict | None = None,
+    is_voice: bool = False,
+    reasoning_plan: dict | None = None,
+    use_web_search: bool | None = None,
+):
     """
-    Generator stream từng cụm token trực tiếp từ Google AI Studio (SSE), đã qua bộ lọc No-Fluff thời gian thực.
+    Generator stream từng cụm token trực tiếp từ Google AI Studio (SSE),
+    hỗ trợ Adaptive Thinking + Google Search Grounding kèm trích nguồn xác thực.
     """
-    global _GEMINI_NETWORK_OFFLINE_UNTIL
+    global _GEMINI_NETWORK_OFFLINE_UNTIL, _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL
     if not GEMINI_API_KEY:
         raise RuntimeError("Missing GEMINI_API_KEY")
 
@@ -1921,106 +3153,162 @@ def _stream_gemini_tokens(raw_message: str, system_content: str, prefs: dict | N
     if now_mono < _GEMINI_NETWORK_OFFLINE_UNTIL:
         raise RuntimeError("Gemini offline circuit breaker active")
 
+    p = _normalize_ai_prefs(prefs)
+    n = _norm(raw_message)
+    plan = reasoning_plan or _classify_reasoning_plan(raw_message, n, prefs=p, is_voice=is_voice)
+    budget = int(plan["thinking_budget"])
+    enable_web = _needs_web_search_grounding(raw_message, n) if use_web_search is None else bool(use_web_search)
+
     available_models = [m for m in GEMINI_MODELS if now_mono >= _GEMINI_COOLDOWN_UNTIL.get(m, 0.0)]
     if not available_models:
         available_models = list(GEMINI_MODELS)
 
-    # Trong Voice Mode, ưu tiên model có tốc độ phản hồi TTFT cao nhất (gemini-3.1-flash-lite ~720ms)
-    if is_voice and "gemini-3.1-flash-lite" in available_models:
-        available_models = ["gemini-3.1-flash-lite"] + [m for m in available_models if m != "gemini-3.1-flash-lite"]
+    pref_model = "gemini-3.1-flash-lite" if is_voice else plan.get("preferred_model")
+    if pref_model in available_models:
+        available_models = [pref_model] + [m for m in available_models if m != pref_model]
 
-    payload = json.dumps(
-        {
-            "systemInstruction": {"parts": [{"text": system_content}]},
-            "contents": _build_gemini_contents(raw_message, prefs),
-            "generationConfig": _build_gemini_generation_config(raw_message, prefs),
-        }
-    ).encode("utf-8")
+    attempts = _build_gemini_attempt_chain(
+        raw_message,
+        system_content,
+        prefs=p,
+        budget=budget,
+        enable_web=enable_web,
+        is_voice=is_voice,
+        is_streaming=True,
+    )
 
     last_err: Exception | None = None
     for model_name in available_models:
         url = f"{GEMINI_BASE_URL}/{model_name}:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
-        full_parts: list[str] = []
-        try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
 
-            def _raw_sse_gen():
-                with urllib.request.urlopen(req, timeout=3.5) as resp:
-                    for raw_line in resp:
-                        line = raw_line.decode("utf-8", errors="replace").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if not data_str or data_str == "[DONE]":
-                            continue
-                        chunk_obj = json.loads(data_str)
-                        for cand in chunk_obj.get("candidates") or []:
-                            parts = ((cand.get("content") or {}).get("parts")) or []
-                            for p in parts:
-                                if isinstance(p, dict) and not p.get("thought"):
-                                    delta = str(p.get("text") or "")
-                                    if delta:
-                                        yield delta
-
-            for filtered_delta in _filter_stream_tokens(_raw_sse_gen(), prefs):
-                full_parts.append(filtered_delta)
-                yield filtered_delta
-
-            full_reply = _clean_reply_by_prefs("".join(full_parts).strip(), prefs, is_fast_path=False)
-            if full_reply:
-                _append_chat_history(raw_message, full_reply)
-                return
-        except urllib.error.HTTPError as e:
-            last_err = e
-            if full_parts:
-                _append_chat_history(raw_message, _clean_reply_by_prefs("".join(full_parts).strip(), prefs))
-                return
-            if e.code == 429:
-                _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 20.0
+        abort_all_models = False
+        web_tool_quota_blocked = False
+        for attempt_idx, (cur_payload, cur_timeout, has_web_tool) in enumerate(attempts):
+            if has_web_tool and time.monotonic() < _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL and attempt_idx + 1 < len(attempts):
                 continue
-            if e.code == 404:
-                _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 3600.0
-                continue
-            if e.code in (500, 502, 503, 504):
-                _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 10.0
-                continue
-            if e.code in (400, 401, 403):
-                break
-            continue
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-            last_err = e
-            is_net_err = False
-            if isinstance(e, urllib.error.URLError):
-                reason_str = str(getattr(e, "reason", "")).lower()
-                if any(k in reason_str for k in ("gaierror", "getaddrinfo", "nodename nor servname", "network", "refused", "timed out", "10051", "10060", "10065")):
-                    is_net_err = True
-            elif isinstance(e, (TimeoutError, OSError)):
-                err_str = str(e).lower()
-                if any(k in err_str for k in ("winerror 10051", "winerror 10060", "winerror 10065", "network", "refused", "timed out")):
-                    is_net_err = True
+            full_parts: list[str] = []
+            collected_sources: list[tuple[str, str]] = []
 
-            if is_net_err:
-                _GEMINI_NETWORK_OFFLINE_UNTIL = time.monotonic() + 30.0
-                if full_parts:
-                    _append_chat_history(raw_message, _clean_reply_by_prefs("".join(full_parts).strip(), prefs))
+            def _finalize_partial_stream() -> bool:
+                global _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL
+                if not full_parts:
+                    return False
+                partial_reply = _clean_reply_by_prefs("".join(full_parts).strip(), p, is_fast_path=False)
+                if not partial_reply:
+                    return False
+                if web_tool_quota_blocked and not has_web_tool:
+                    _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL = time.monotonic() + 180.0
+                _append_chat_history(raw_message, partial_reply)
+                return True
+
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=cur_payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+
+                def _raw_sse_gen():
+                    with urllib.request.urlopen(req, timeout=cur_timeout) as resp:
+                        for raw_line in resp:
+                            line = raw_line.decode("utf-8", errors="replace").strip()
+                            if not line.startswith("data:"):
+                                continue
+                            data_str = line[5:].strip()
+                            if not data_str or data_str == "[DONE]":
+                                continue
+                            chunk_obj = json.loads(data_str)
+                            for cand in chunk_obj.get("candidates") or []:
+                                srcs = _extract_grounding_sources(cand)
+                                for s_item in srcs:
+                                    if all(s_item[1].lower() != ex[1].lower() and s_item[0].lower() != ex[0].lower() for ex in collected_sources):
+                                        if len(collected_sources) < 4:
+                                            collected_sources.append(s_item)
+                                parts = ((cand.get("content") or {}).get("parts")) or []
+                                for part in parts:
+                                    if isinstance(part, dict) and not part.get("thought"):
+                                        delta = str(part.get("text") or "")
+                                        if delta:
+                                            yield delta
+
+                for filtered_delta in _filter_stream_tokens(_raw_sse_gen(), p):
+                    full_parts.append(filtered_delta)
+                    yield filtered_delta
+
+                full_reply = _clean_reply_by_prefs("".join(full_parts).strip(), p, is_fast_path=False)
+                if full_reply:
+                    if web_tool_quota_blocked and not has_web_tool:
+                        _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL = time.monotonic() + 180.0
+                    footer = _format_grounding_sources_footer(collected_sources, plain_text=bool(p["plain_text"]))
+                    if footer:
+                        full_parts.append(footer)
+                        full_reply = full_reply + footer
+                        yield footer
+                    _append_chat_history(raw_message, full_reply)
                     return
-                break  # Ngắt vòng lặp ngay lập tức, chuyển tức thì sang Ollama GPU (<1s)!
+                break
+            except urllib.error.HTTPError as e:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+                last_err = e
+                if _finalize_partial_stream():
+                    return
+                if has_web_tool and e.code in (400, 403, 429) and attempt_idx + 1 < len(attempts):
+                    if e.code in (403, 429):
+                        web_tool_quota_blocked = True
+                    continue
+                if e.code == 400:
+                    if attempt_idx + 1 < len(attempts):
+                        continue
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 60.0
+                    break
+                if e.code == 429:
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 20.0
+                    break
+                if e.code == 404:
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 3600.0
+                    break
+                if e.code in (500, 502, 503, 504):
+                    _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 10.0
+                    break
+                if e.code in (401, 403):
+                    abort_all_models = True
+                    break
+                break
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+                last_err = e
+                is_net_err = False
+                if isinstance(e, urllib.error.URLError):
+                    reason_str = str(getattr(e, "reason", "")).lower()
+                    if any(k in reason_str for k in ("gaierror", "getaddrinfo", "nodename nor servname", "network", "refused", "timed out", "10051", "10060", "10065")):
+                        is_net_err = True
+                elif isinstance(e, (TimeoutError, OSError)):
+                    err_str = str(e).lower()
+                    if any(k in err_str for k in ("winerror 10051", "winerror 10060", "winerror 10065", "network", "refused", "timed out")):
+                        is_net_err = True
 
-            _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 10.0
-            if full_parts:
-                _append_chat_history(raw_message, _clean_reply_by_prefs("".join(full_parts).strip(), prefs))
-                return
-            continue
-        except Exception as e:
-            last_err = e
-            if full_parts:
-                _append_chat_history(raw_message, _clean_reply_by_prefs("".join(full_parts).strip(), prefs))
-                return
+                if is_net_err:
+                    _GEMINI_NETWORK_OFFLINE_UNTIL = time.monotonic() + 30.0
+                    if _finalize_partial_stream():
+                        return
+                    abort_all_models = True
+                    break  # Ngắt vòng lặp ngay lập tức, chuyển tức thì sang Ollama GPU (<1s)!
+
+                if _finalize_partial_stream():
+                    return
+                _GEMINI_COOLDOWN_UNTIL[model_name] = time.monotonic() + 10.0
+                break
+            except Exception as e:
+                last_err = e
+                if _finalize_partial_stream():
+                    return
+                abort_all_models = True
+                break
+
+        if abort_all_models:
             break
 
     raise RuntimeError(f"Gemini streaming unavailable: {last_err}")
@@ -2078,13 +3366,30 @@ def _ask_ollama(
         return OLLAMA_WAITING_MSG
 
 
-def _ask_ai(raw_message: str, text_norm: str, prefs: dict | None = None) -> str:
+def _ask_ai(
+    raw_message: str,
+    text_norm: str,
+    prefs: dict | None = None,
+    mem_events: dict | None = None,
+) -> str:
     """Ưu tiên gọi Google AI Studio (Gemini) khi có mạng; tự động fallback về Ollama local khi offline."""
     system_content = _build_system_context(text_norm, prefs, raw_message=raw_message)
     online_reply = _ask_gemini(raw_message, system_content, prefs=prefs)
     if online_reply:
+        _schedule_background_memory_learning(raw_message, online_reply)
         return online_reply
-    return _ask_ollama(raw_message, text_norm, prebuilt_system=system_content, prefs=prefs)
+
+    local_reply = _ask_ollama(raw_message, text_norm, prebuilt_system=system_content, prefs=prefs)
+    if local_reply and local_reply != OLLAMA_WAITING_MSG:
+        _schedule_background_memory_learning(raw_message, local_reply)
+        return local_reply
+
+    offline_mem_reply = _answer_personal_memory_offline(raw_message, text_norm, mem_events=mem_events)
+    if offline_mem_reply:
+        cleaned = _clean_reply_by_prefs(offline_mem_reply, prefs, is_fast_path=True)
+        _append_chat_history(raw_message, cleaned, is_fast_path=True)
+        return cleaned
+    return local_reply
 
 
 def get_reply(message: str, prefs: dict | None = None) -> str:
@@ -2094,21 +3399,27 @@ def get_reply(message: str, prefs: dict | None = None) -> str:
     n = _norm(raw)
     core = _strip_conversational_fillers(n)
 
-    # Tự động học thông tin cá nhân nếu người dùng giới thiệu trong câu chat
+    # Tự động học thông tin Hồ sơ cá nhân nếu người dùng giới thiệu trong câu chat
     extract_and_update_profile_from_message(raw)
 
-    # --- Xóa lịch sử hội thoại ---
+    # --- Xóa lịch sử hội thoại (giữ nguyên Trí nhớ dài hạn, Việc cần nhớ & Hồ sơ) ---
     if core in ("xoa lich su", "clear", "reset", "xoa chat", "xoa hoi thoai"):
         _clear_chat_history()
         return _clean_reply_by_prefs("🧹 Wisp đã xóa lịch sử trò chuyện.", prefs, is_fast_path=True)
 
-    # --- Thời tiết tra cứu ngắn (Fast-path chuẩn SPEC, ưu tiên nơi ở trong Hồ sơ cá nhân) ---
+    # --- Tầng 1 (<1ms): Bắt tức thì lệnh Nhắc việc / Hoàn thành việc / Quên ký ức / Ghi nhớ ---
+    mem_events = extract_instant_memory_and_tasks(raw)
+    if mem_events.get("direct_reply"):
+        cleaned = _clean_reply_by_prefs(str(mem_events["direct_reply"]), prefs, is_fast_path=True)
+        _append_chat_history(raw, cleaned, is_fast_path=True)
+        return cleaned
+
+    # --- Thời tiết tra cứu ngắn (hỗ trợ hiện tại, ngày mai, ngày mốt, cuối tuần, 7 ngày tới) ---
     if _is_short_weather_command(n):
-        is_tomorrow = "ngay mai" in n or "tomorrow" in n
-        city = _extract_city_after(n, ["thoi tiet", "weather", "nhiet do"])
+        city = _extract_city_after(n, ["thoi tiet", "weather", "nhiet do", "du bao"])
         if not city:
             city = _detect_city_in_text(n)
-        res = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
+        res = _get_weather_for_query(city, raw, n)
         cleaned = _clean_reply_by_prefs(res, prefs, is_fast_path=True)
         _append_chat_history(raw, cleaned, is_fast_path=True)
         return cleaned
@@ -2120,8 +3431,8 @@ def get_reply(message: str, prefs: dict | None = None) -> str:
         _append_chat_history(raw, cleaned, is_fast_path=True)
         return cleaned
 
-    # --- Mọi câu hỏi tự nhiên, tư vấn thời tiết, trò chuyện, viết code -> Ưu tiên Gemini Online, fallback Ollama ---
-    return _ask_ai(raw, n, prefs=prefs)
+    # --- Mọi câu hỏi tự nhiên, tư vấn chủ động, tra cứu Web, viết code -> Gemini Online / Ollama ---
+    return _ask_ai(raw, n, prefs=prefs, mem_events=mem_events)
 
 
 def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False):
@@ -2143,7 +3454,7 @@ def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False
     # Giai đoạn 1: Mở kết nối & kiểm tra bộ nhớ ngữ cảnh
     yield {"type": "state", "state": "connecting", "label": "Đang nạp ngữ cảnh…"}
 
-    # Tự động học thông tin cá nhân nếu người dùng chia sẻ trong câu chat
+    # Tự động học thông tin Hồ sơ cá nhân nếu người dùng chia sẻ trong câu chat
     learned_fields = extract_and_update_profile_from_message(raw)
     if learned_fields:
         yield {
@@ -2152,7 +3463,7 @@ def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False
             "learned": learned_fields,
         }
 
-    # Xóa bộ nhớ hội thoại -> trạng thái shaping (biến đổi/tái cấu trúc)
+    # Xóa bộ nhớ hội thoại -> chỉ xóa khung chat hiện tại + tóm tắt phiên, bảo toàn 100% Ký ức dài hạn & Việc cần nhớ
     if core in ("xoa lich su", "clear", "reset", "xoa chat", "xoa hoi thoai"):
         yield {"type": "state", "state": "shaping", "label": "Đang làm mới bộ nhớ hội thoại…"}
         _clear_chat_history()
@@ -2161,12 +3472,38 @@ def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False
         yield {"type": "done", "reply": cleaned}
         return
 
-    # Fast-path: Thời tiết ngắn -> kích hoạt searching vì thực sự gọi API Open-Meteo
+    # Tầng 1 (<1ms): Bắt nhanh Ký ức & Việc cần nhớ và phát sự kiện SSE memory_updated cho UI
+    mem_events = extract_instant_memory_and_tasks(raw)
+    has_mem_change = bool(
+        mem_events["memories_added"]
+        or mem_events["memories_forgotten"]
+        or mem_events["tasks_added"]
+        or mem_events["tasks_completed"]
+    )
+    if has_mem_change:
+        yield {
+            "type": "memory_updated",
+            "toast": mem_events["toast"],
+            "memories_added": mem_events["memories_added"],
+            "memories_forgotten": mem_events["memories_forgotten"],
+            "tasks_added": mem_events["tasks_added"],
+            "tasks_completed": mem_events["tasks_completed"],
+            "counts": memory_store.get_counts(),
+        }
+
+    if mem_events.get("direct_reply"):
+        direct_txt = _clean_reply_by_prefs(str(mem_events["direct_reply"]), p, is_fast_path=True)
+        _append_chat_history(raw, direct_txt, is_fast_path=True)
+        yield {"type": "state", "state": "composing", "label": "Đang phản hồi…"}
+        yield {"type": "token", "delta": direct_txt}
+        yield {"type": "done", "reply": direct_txt}
+        return
+
+    # Fast-path: Thời tiết ngắn (hiện tại / ngày mai / ngày mốt / cuối tuần / N ngày tới)
     if _is_short_weather_command(n):
-        is_tomorrow = "ngay mai" in n or "tomorrow" in n
-        city = _extract_city_after(n, ["thoi tiet", "weather", "nhiet do"]) or _detect_city_in_text(n)
+        city = _extract_city_after(n, ["thoi tiet", "weather", "nhiet do", "du bao"]) or _detect_city_in_text(n)
         yield {"type": "state", "state": "searching", "label": "Đang truy xuất dữ liệu Open-Meteo…"}
-        res = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
+        res = _get_weather_for_query(city, raw, n)
         res = _clean_reply_by_prefs(res, p, is_fast_path=True)
         _append_chat_history(raw, res, is_fast_path=True)
         yield {"type": "state", "state": "composing", "label": "Đang phản hồi…"}
@@ -2185,42 +3522,59 @@ def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False
         yield {"type": "done", "reply": fast_reply}
         return
 
-    # Chuẩn bị ngữ cảnh thời gian thực, Hồ sơ cá nhân, quy tắc phong cách trả lời & thời tiết (nếu có)
+    # Hợp nhất ngữ cảnh chủ động (Hồ sơ + Ký ức SQLite + Việc cần nhớ + Tóm tắt phiên + Thời tiết 1-7 ngày)
     now = datetime.now(VN_TZ)
-    is_code = _is_code_request(raw)
-    ctx_lines = [
-        _build_system_prompt(),
-        _build_user_profile_prompt(),
-        _build_style_rules_prompt(p, is_code_query=is_code, is_voice=is_voice),
-        f"\n[Ngữ cảnh thời gian thực]: Bây giờ là {now.strftime('%H:%M:%S')} — {WEEKDAY_VI[now.weekday()]}, ngày {now.strftime('%d/%m/%Y')} (giờ Việt Nam).",
-    ]
-
+    preloaded_weather: str | None = None
     if _is_weather_topic(raw, n):
         yield {"type": "state", "state": "searching", "label": "Đang lấy dữ liệu thời tiết thực tế…"}
         city = _detect_city_in_text(n)
-        is_tomorrow = "ngay mai" in n or "tomorrow" in n
-        weather_info = get_tomorrow_weather(city) if is_tomorrow else get_current_weather(city)
-        ctx_lines.append(
-            f"[Dữ liệu thời tiết thực tế từ Open-Meteo]:\n{weather_info}\n"
-            "(Hãy dùng chính xác số liệu và nêu rõ tên địa danh trong dữ liệu thời tiết trên để trả lời hoặc tư vấn phù hợp thực tế)."
-        )
+        preloaded_weather = _get_weather_for_query(city, raw, n, now_dt=now)
         yield {"type": "state", "state": "weaving", "label": "Đang đan ghép dữ liệu vào ngữ cảnh AI…"}
 
-    system_content = "\n".join(ctx_lines)
+    system_content = _build_system_context(
+        n,
+        p,
+        raw_message=raw,
+        is_voice=is_voice,
+        preloaded_weather=preloaded_weather,
+    )
 
-    # 1. ƯU TIÊN ONLINE: Thử stream qua Google AI Studio (Gemini API) nếu có model chưa bị cooldown
+    reasoning_plan = _classify_reasoning_plan(raw, n, prefs=p, is_voice=is_voice)
+    use_web = _needs_web_search_grounding(raw, n)
+
+    # 1. ƯU TIÊN ONLINE: Thử stream qua Google AI Studio (Gemini API) nếu mạch mạng đang mở và có model chưa bị cooldown
     now_mono = time.monotonic()
-    if GEMINI_API_KEY and any(now_mono >= _GEMINI_COOLDOWN_UNTIL.get(m, 0.0) for m in GEMINI_MODELS):
+    if (
+        GEMINI_API_KEY
+        and now_mono >= _GEMINI_NETWORK_OFFLINE_UNTIL
+        and any(now_mono >= _GEMINI_COOLDOWN_UNTIL.get(m, 0.0) for m in GEMINI_MODELS)
+    ):
         try:
-            yield {"type": "state", "state": "solving", "label": "Đang suy luận qua Google AI Studio…"}
+            if use_web and now_mono >= _GEMINI_WEB_SEARCH_COOLDOWN_UNTIL:
+                yield {"type": "state", "state": "searching", "label": "Đang tra cứu Web thời gian thực…"}
+            solving_label = (
+                "Đang suy luận chuyên sâu…"
+                if reasoning_plan["thinking_budget"] > 0
+                else "Đang suy luận qua Google AI Studio…"
+            )
+            yield {"type": "state", "state": "solving", "label": solving_label}
             streamed_parts: list[str] = []
-            for delta in _stream_gemini_tokens(raw, system_content, prefs=p, is_voice=is_voice):
+            for delta in _stream_gemini_tokens(
+                raw,
+                system_content,
+                prefs=p,
+                is_voice=is_voice,
+                reasoning_plan=reasoning_plan,
+                use_web_search=use_web,
+            ):
                 streamed_parts.append(delta)
                 yield {"type": "token", "delta": delta}
             if streamed_parts:
                 final_clean = _clean_reply_by_prefs("".join(streamed_parts).strip(), p, is_fast_path=False)
-                yield {"type": "done", "reply": final_clean}
-                return
+                if final_clean:
+                    _schedule_background_memory_learning(raw, final_clean)
+                    yield {"type": "done", "reply": final_clean}
+                    return
         except Exception:
             # Mất mạng hoặc Gemini bận -> chuyển mượt sang Ollama local bên dưới
             pass
@@ -2229,6 +3583,13 @@ def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False
     try:
         model = _resolve_ollama_model()
         if not model:
+            offline_mem_reply = _answer_personal_memory_offline(raw, n, mem_events=mem_events, now_dt=now)
+            if offline_mem_reply:
+                clean_off = _clean_reply_by_prefs(offline_mem_reply, p, is_fast_path=True)
+                _append_chat_history(raw, clean_off, is_fast_path=True)
+                yield {"type": "token", "delta": clean_off}
+                yield {"type": "done", "reply": clean_off}
+                return
             yield {"type": "state", "state": "shaping", "label": "Đang khởi tạo model…"}
             yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
             yield {"type": "done"}
@@ -2281,14 +3642,30 @@ def stream_reply(message: str, prefs: dict | None = None, is_voice: bool = False
 
         full_reply = _clean_reply_by_prefs("".join(full_reply_parts).strip(), p, is_fast_path=False)
         if not full_reply:
-            yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
-            yield {"type": "done"}
+            offline_mem_reply = _answer_personal_memory_offline(raw, n, mem_events=mem_events, now_dt=now)
+            if offline_mem_reply:
+                clean_off = _clean_reply_by_prefs(offline_mem_reply, p, is_fast_path=True)
+                _append_chat_history(raw, clean_off, is_fast_path=True)
+                yield {"type": "token", "delta": clean_off}
+                yield {"type": "done", "reply": clean_off}
+            else:
+                yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
+                yield {"type": "done"}
         else:
             _append_chat_history(raw, full_reply)
+            _schedule_background_memory_learning(raw, full_reply)
             yield {"type": "done", "reply": full_reply}
     except Exception:
-        yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
-        yield {"type": "done"}
+        offline_mem_reply = _answer_personal_memory_offline(raw, n, mem_events=mem_events, now_dt=now)
+        if offline_mem_reply:
+            clean_off = _clean_reply_by_prefs(offline_mem_reply, p, is_fast_path=True)
+            _append_chat_history(raw, clean_off, is_fast_path=True)
+            yield {"type": "token", "delta": clean_off}
+            yield {"type": "done", "reply": clean_off}
+        else:
+            yield {"type": "token", "delta": OLLAMA_WAITING_MSG}
+            yield {"type": "done"}
+
 
 
 

@@ -298,3 +298,141 @@ def get_tomorrow_weather(city: str) -> str:
         return "⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."
     except Exception:
         return "⚠️ Lỗi khi lấy dự báo, thử lại sau 1 chút nhé."
+
+
+_WEEKDAY_VI = [
+    "Thứ Hai",
+    "Thứ Ba",
+    "Thứ Tư",
+    "Thứ Năm",
+    "Thứ Sáu",
+    "Thứ Bảy",
+    "Chủ Nhật",
+]
+
+
+def _format_forecast_day_label(iso_date: str, offset: int) -> str:
+    """Định dạng nhãn ngày tiếng Việt dễ đọc từ chuỗi YYYY-MM-DD và độ lệch ngày."""
+    from datetime import datetime as _dt
+
+    try:
+        d_obj = _dt.strptime(str(iso_date), "%Y-%m-%d").date()
+        wd = _WEEKDAY_VI[d_obj.weekday()]
+        dd_mm = d_obj.strftime("%d/%m")
+    except Exception:
+        wd = ""
+        dd_mm = str(iso_date)
+
+    if offset == 0:
+        return f"Hôm nay ({wd} {dd_mm})".replace("( ", "(")
+    if offset == 1:
+        return f"Ngày mai ({wd} {dd_mm})".replace("( ", "(")
+    if offset == 2:
+        return f"Ngày mốt ({wd} {dd_mm})".replace("( ", "(")
+    if wd:
+        return f"{wd} ({dd_mm})"
+    return dd_mm
+
+
+def get_multi_day_weather(
+    city: str,
+    days: int = 7,
+    target_offsets: list[int] | None = None,
+) -> str:
+    """
+    Dự báo thời tiết nhiều ngày (mặc định 7 ngày) hoặc lọc đúng các ngày mục tiêu (target_offsets).
+    Dùng chung _JSON_CACHE 3 phút với Open-Meteo, không cần API key.
+    """
+    try:
+        loc = geocode(city)
+    except urllib.error.HTTPError:
+        return "⚠️ Lỗi khi tra cứu địa điểm, thử tên thành phố khác nhé."
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return "⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."
+    except Exception:
+        return "⚠️ Lỗi khi tra cứu địa điểm, thử tên thành phố khác nhé."
+    if not loc:
+        return f"⚠️ Không tìm thấy địa điểm “{city}”. Thử gõ tên thành phố khác, vd: Hà Nội, Đà Nẵng, Đà Lạt."
+
+    clamped_days = max(1, min(14, int(days or 7)))
+    clean_offsets: list[int] | None = None
+    if target_offsets is not None:
+        dedup = sorted({int(o) for o in target_offsets if isinstance(o, int) and 0 <= int(o) < 14})
+        if dedup:
+            clean_offsets = dedup
+
+    max_needed_days = clamped_days
+    if clean_offsets:
+        max_needed_days = max(max_needed_days, max(clean_offsets) + 1)
+    # Mặc định hỏi forecast_days=7 (hoặc tối đa 14 khi hỏi sang tuần sau) để tối ưu tỷ lệ trúng cache 3 phút
+    forecast_days = 7 if max_needed_days <= 7 else min(14, max_needed_days)
+
+    try:
+        params = urllib.parse.urlencode(
+            {
+                "latitude": loc["latitude"],
+                "longitude": loc["longitude"],
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "timezone": "auto",
+                "forecast_days": forecast_days,
+            }
+        )
+        data = _get_json(f"{FORECAST_URL}?{params}")
+        d = data.get("daily") or {}
+        times = d.get("time") or []
+        codes = d.get("weather_code") or []
+        tmax_list = d.get("temperature_2m_max") or []
+        tmin_list = d.get("temperature_2m_min") or []
+        rain_list = d.get("precipitation_probability_max") or []
+
+        avail = min(len(times), len(codes), len(tmax_list), len(tmin_list))
+        if avail <= 0:
+            return "⚠️ Chưa có dữ liệu dự báo cho địa điểm này, thử lại sau 1 chút nhé."
+
+        if clean_offsets is not None:
+            indices = [idx for idx in clean_offsets if 0 <= idx < avail]
+            if not indices:
+                indices = list(range(min(clamped_days, avail)))
+        else:
+            indices = list(range(min(clamped_days, avail)))
+
+        place = _place_label(loc)
+
+        # Trường hợp hỏi đúng 1 ngày cụ thể (vd: "ngày mốt", "thứ Bảy này")
+        if len(indices) == 1:
+            idx = indices[0]
+            day_label = _format_forecast_day_label(times[idx], idx)
+            desc = WMO_TEXT.get(codes[idx], "Không rõ")
+            tmin = tmin_list[idx]
+            tmax = tmax_list[idx]
+            rain = rain_list[idx] if idx < len(rain_list) else None
+            rain_txt = f"\n• Khả năng mưa: {rain}%" if rain is not None else ""
+            return (
+                f"🌤️ Dự báo {day_label} tại {place}:\n"
+                f"• {desc}\n"
+                f"• Nhiệt độ: {tmin}°C – {tmax}°C{rain_txt}"
+            )
+
+        # Trường hợp nhiều ngày (vd: "cuối tuần này", "3 ngày tới", "7 ngày tới")
+        if clean_offsets is None or indices == list(range(len(indices))):
+            header = f"🌤️ Dự báo {len(indices)} ngày tới tại {place}:"
+        else:
+            header = f"🌤️ Dự báo thời tiết tại {place}:"
+
+        lines = [header]
+        for idx in indices:
+            day_label = _format_forecast_day_label(times[idx], idx)
+            desc = WMO_TEXT.get(codes[idx], "Không rõ")
+            tmin = tmin_list[idx]
+            tmax = tmax_list[idx]
+            rain = rain_list[idx] if idx < len(rain_list) else None
+            rain_part = f", mưa {rain}%" if rain is not None else ""
+            lines.append(f"• {day_label}: {desc}, {tmin}°C – {tmax}°C{rain_part}")
+        return "\n".join(lines)
+    except urllib.error.HTTPError:
+        return "⚠️ Lỗi khi lấy dự báo, thử lại sau 1 chút nhé."
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return "⚠️ Không có mạng rồi — kiểm tra lại Wi-Fi rồi thử lại nhé."
+    except Exception:
+        return "⚠️ Lỗi khi lấy dự báo, thử lại sau 1 chút nhé."
+
